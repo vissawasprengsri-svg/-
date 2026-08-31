@@ -1,0 +1,1152 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Wallet, Clock, PieChart as PieIcon, PlusCircle, Home, ChevronLeft, ChevronRight, Trash2, Check, ArrowUpCircle, ArrowDownCircle, Landmark, TrendingUp, LayoutGrid, Settings as SettingsIcon, Sparkles, CreditCard, Banknote, X, HandCoins } from 'lucide-react';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
+
+const DEFAULT_EXPENSE_CATEGORIES = ['อาหาร', 'เดินทาง', 'ที่พัก/บ้าน', 'ช้อปปิ้ง', 'สุขภาพ', 'บันเทิง', 'ครอบครัว', 'บิล/ค่าใช้จ่ายประจำ', 'การศึกษา', 'อื่นๆ'];
+const INCOME_CATEGORIES = ['เงินเดือน', 'รายได้เสริม', 'อื่นๆ'];
+const CAT_COLORS = ['#1F6D5A', '#C98A2C', '#B5432B', '#2F6690', '#7A5C8E', '#5C8A3A', '#B0793F', '#4A6670', '#8C5A6E', '#6B6B58'];
+
+const TYPE_LABEL = { income: 'รายรับ', personal_expense: 'รายจ่ายส่วนตัว', pending_claim: 'รอเบิก/รอบิล', investment: 'ลงทุน', debt_payment: 'ชำระหนี้', loan_given: 'ให้ยืมเงิน' };
+const CLAIM_STATUS_LABEL = { awaiting_bill: 'รอบิล', pending: 'รอตั้งเบิก', claimed: 'ตั้งเบิกแล้ว', received: 'ได้รับคืนแล้ว' };
+const CLAIM_STATUS_ORDER = ['awaiting_bill', 'pending', 'claimed', 'received'];
+
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function todayStr() { return new Date().toISOString().slice(0, 10); }
+function fmtMoney(n) { return (n < 0 ? '-' : '') + Math.abs(n || 0).toLocaleString('th-TH', { minimumFractionDigits: 0, maximumFractionDigits: 2 }); }
+function monthKey(d) { return d.slice(0, 7); }
+function monthLabel(key) {
+  const [y, m] = key.split('-');
+  const names = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+  return `${names[parseInt(m, 10) - 1]} ${(parseInt(y, 10) + 543).toString().slice(-2)}`;
+}
+function cashDelta(t, categoryStatusMap) {
+  if (t.type === 'income') return t.amount;
+  if (t.type === 'personal_expense') {
+    const status = t.category ? (categoryStatusMap || {})[t.category] : '';
+    if (status && t.claimReceived) return 0;
+    return -t.amount;
+  }
+  if (t.type === 'investment') return t.direction === 'in' ? -t.amount : t.amount;
+  if (t.type === 'pending_claim') return t.status === 'received' ? 0 : -t.amount;
+  if (t.type === 'debt_payment') return -t.amount;
+  if (t.type === 'loan_given') return t.status === 'repaid' ? 0 : -t.amount;
+  return 0;
+}
+function paymentLabel(pm, cards, cashAccounts) {
+  if (!pm || pm === 'cash') return 'เงินสด/โอน';
+  const acc = (cashAccounts || []).find(a => a.id === pm);
+  if (acc) return acc.name;
+  const c = (cards || []).find(c => c.id === pm);
+  return c ? c.name : 'ไม่ระบุ';
+}
+function isCardId(pm, cards) { return (cards || []).some(c => c.id === pm); }
+
+async function aiCategorize(description, categoryNames) {
+  if (!description || !description.trim() || !categoryNames || categoryNames.length === 0) return null;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1000,
+        messages: [{
+          role: 'user',
+          content: `จัดหมวดหมู่รายการค่าใช้จ่ายนี้: "${description}"\n\nเลือกได้เฉพาะหมวดหมู่ต่อไปนี้เท่านั้น: ${categoryNames.join(', ')}\n\nตอบกลับด้วยชื่อหมวดหมู่คำเดียวเป๊ะๆ ตามที่ให้มา ห้ามมีคำอธิบายอื่นใด`
+        }]
+      })
+    });
+    const data = await res.json();
+    const text = (data.content || []).find(b => b.type === 'text')?.text?.trim();
+    return categoryNames.includes(text) ? text : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+const emptyForm = {
+  type: 'personal_expense', amount: '', description: '', date: todayStr(),
+  category: '', customCategory: '', paymentMethod: 'cash', direction: 'in', buyer: 'self',
+  awaitingBill: false, claimCategory: '', debtId: ''
+};
+
+export default function FinanceTracker() {
+  const [transactions, setTransactions] = useState(null);
+  const [cards, setCards] = useState([]);
+  const [cashAccounts, setCashAccounts] = useState([]);
+  const [expenseCategories, setExpenseCategories] = useState(DEFAULT_EXPENSE_CATEGORIES.map(name => ({ name, status: '' })));
+  const [claimCategories, setClaimCategories] = useState([]);
+  const [debts, setDebts] = useState([]);
+  const [tab, setTab] = useState('dashboard');
+  const [form, setForm] = useState(emptyForm);
+  const [reportMonth, setReportMonth] = useState(monthKey(todayStr()));
+  const [saveErr, setSaveErr] = useState('');
+  const [newCardName, setNewCardName] = useState('');
+  const [newCashName, setNewCashName] = useState('');
+  const [newDebtName, setNewDebtName] = useState('');
+  const [newDebtAmt, setNewDebtAmt] = useState('');
+  const [newExpCatName, setNewExpCatName] = useState('');
+  const [newExpCatStatus, setNewExpCatStatus] = useState('');
+  const [selectedTx, setSelectedTx] = useState(null);
+  const [viewCategory, setViewCategory] = useState(null);
+  const [aiBusyIds, setAiBusyIds] = useState([]);
+  const [bulkAiBusy, setBulkAiBusy] = useState(false);
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+
+  function showToast(message, undoId) {
+    setToast({ message, undoId });
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 6000);
+  }
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage.get('app-data', false);
+        const parsed = r ? JSON.parse(r.value) : {};
+        const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const rawTx = parsed.transactions || [];
+        const cleaned = rawTx.filter(t => !(t.deletedAt && t.deletedAt < cutoff));
+        setTransactions(cleaned);
+        setCards(parsed.cards || []);
+        setCashAccounts(parsed.cashAccounts || []);
+        const rawCats = parsed.expenseCategories || DEFAULT_EXPENSE_CATEGORIES.map(name => ({ name, status: '' }));
+        setExpenseCategories(rawCats.map(c => typeof c === 'string' ? { name: c, status: '' } : c));
+        setClaimCategories(parsed.claimCategories || []);
+        setDebts(parsed.debts || []);
+        if (cleaned.length !== rawTx.length) {
+          window.storage.set('app-data', JSON.stringify({ ...parsed, transactions: cleaned }), false).catch(() => {});
+        }
+      } catch (e) {
+        setTransactions([]); setCards([]); setCashAccounts([]);
+        setExpenseCategories(DEFAULT_EXPENSE_CATEGORIES.map(name => ({ name, status: '' })));
+        setClaimCategories([]); setDebts([]);
+      }
+    })();
+  }, []);
+
+  async function persist(updates) {
+    const next = {
+      transactions: updates.transactions !== undefined ? updates.transactions : transactions,
+      cards: updates.cards !== undefined ? updates.cards : cards,
+      cashAccounts: updates.cashAccounts !== undefined ? updates.cashAccounts : cashAccounts,
+      expenseCategories: updates.expenseCategories !== undefined ? updates.expenseCategories : expenseCategories,
+      claimCategories: updates.claimCategories !== undefined ? updates.claimCategories : claimCategories,
+      debts: updates.debts !== undefined ? updates.debts : debts,
+    };
+    if (updates.transactions !== undefined) setTransactions(updates.transactions);
+    if (updates.cards !== undefined) setCards(updates.cards);
+    if (updates.cashAccounts !== undefined) setCashAccounts(updates.cashAccounts);
+    if (updates.expenseCategories !== undefined) setExpenseCategories(updates.expenseCategories);
+    if (updates.claimCategories !== undefined) setClaimCategories(updates.claimCategories);
+    if (updates.debts !== undefined) setDebts(updates.debts);
+    try {
+      const ok = await window.storage.set('app-data', JSON.stringify(next), false);
+      if (!ok) setSaveErr('บันทึกไม่สำเร็จ ลองอีกครั้ง'); else setSaveErr('');
+    } catch (e) {
+      setSaveErr('บันทึกไม่สำเร็จ ลองอีกครั้ง');
+    }
+  }
+
+  const categoryStatusMap = useMemo(() => Object.fromEntries(expenseCategories.map(c => [c.name, c.status || ''])), [expenseCategories]);
+  const liveTx = useMemo(() => (transactions || []).filter(t => !t.deletedAt), [transactions]);
+  const trashList = useMemo(() => (transactions || []).filter(t => t.deletedAt).sort((a, b) => b.deletedAt - a.deletedAt), [transactions]);
+  const available = useMemo(() => liveTx.reduce((s, t) => s + cashDelta(t, categoryStatusMap), 0), [liveTx, categoryStatusMap]);
+  const pendingList = useMemo(() => liveTx.filter(t => t.type === 'pending_claim' && t.status !== 'received').sort((a, b) => a.date < b.date ? 1 : -1), [liveTx]);
+  const pendingTotal = useMemo(() => pendingList.reduce((s, t) => s + t.amount, 0), [pendingList]);
+  const folderPendingList = useMemo(() => liveTx.filter(t => t.type === 'personal_expense' && t.category && categoryStatusMap[t.category] && !t.claimReceived), [liveTx, categoryStatusMap]);
+  const folderPendingTotal = useMemo(() => folderPendingList.reduce((s, t) => s + t.amount, 0), [folderPendingList]);
+  const folderPendingGrouped = useMemo(() => {
+    const groups = {};
+    folderPendingList.forEach(t => { (groups[t.category] = groups[t.category] || []).push(t); });
+    return Object.entries(groups).map(([name, items]) => ({ name, status: categoryStatusMap[name], items, total: items.reduce((s, t) => s + t.amount, 0) }));
+  }, [folderPendingList, categoryStatusMap]);
+  const loanList = useMemo(() => liveTx.filter(t => t.type === 'loan_given' && t.status !== 'repaid').sort((a, b) => a.date < b.date ? 1 : -1), [liveTx]);
+  const loanTotal = useMemo(() => loanList.reduce((s, t) => s + t.amount, 0), [loanList]);
+  const combinedPendingTotal = pendingTotal + folderPendingTotal;
+  const statusTotals = useMemo(() => {
+    const m = {};
+    folderPendingList.forEach(t => { const s = categoryStatusMap[t.category] || 'ไม่ระบุสถานะ'; m[s] = (m[s] || 0) + t.amount; });
+    pendingList.forEach(t => { const s = CLAIM_STATUS_LABEL[t.status]; m[s] = (m[s] || 0) + t.amount; });
+    return Object.entries(m).map(([label, total]) => ({ label, total })).sort((a, b) => b.total - a.total);
+  }, [folderPendingList, pendingList, categoryStatusMap]);
+  const debtTotal = useMemo(() => debts.reduce((s, d) => s + (d.balance || 0), 0), [debts]);
+  const unsortedList = useMemo(() => liveTx.filter(t => t.type === 'personal_expense' && !t.category), [liveTx]);
+  const recent = useMemo(() => [...liveTx].sort((a, b) => (b.date + b.id) < (a.date + a.id) ? -1 : 1).slice(0, 6), [liveTx]);
+  const categoryCounts = useMemo(() => {
+    const m = {};
+    liveTx.filter(t => t.type === 'personal_expense' && t.category).forEach(t => { m[t.category] = (m[t.category] || 0) + 1; });
+    return m;
+  }, [liveTx]);
+  const pendingGrouped = useMemo(() => {
+    const groups = {};
+    pendingList.forEach(t => { const k = t.claimCategory || '__none__'; (groups[k] = groups[k] || []).push(t); });
+    const orderedKeys = [...claimCategories.filter(c => groups[c]), ...(groups['__none__'] ? ['__none__'] : [])];
+    return orderedKeys.map(k => ({ key: k, label: k === '__none__' ? 'ไม่ระบุหมวด' : k, items: groups[k], total: groups[k].reduce((s, t) => s + t.amount, 0) }));
+  }, [pendingList, claimCategories]);
+
+  function resetForm(type) { setForm({ ...emptyForm, type, date: todayStr() }); }
+
+  function submit() {
+    const amt = parseFloat(form.amount);
+    if (!amt || amt <= 0) { setSaveErr('กรุณาใส่จำนวนเงินให้ถูกต้อง'); return; }
+    if (!form.date) { setSaveErr('กรุณาเลือกวันที่'); return; }
+    if (form.type === 'debt_payment' && !form.debtId) { setSaveErr('กรุณาเลือกหนี้ที่จะชำระ'); return; }
+    setSaveErr('');
+    const t = { id: uid(), type: form.type, amount: amt, description: form.description.trim(), date: form.date };
+    let cardTouched = null;
+    if (form.type === 'personal_expense') {
+      t.category = null;
+      t.paymentMethod = form.paymentMethod;
+      if (isCardId(form.paymentMethod, cards)) cardTouched = form.paymentMethod;
+    } else if (form.type === 'income') {
+      t.category = form.category === 'อื่นๆ' && form.customCategory ? form.customCategory.trim() : (form.category || 'อื่นๆ');
+    } else if (form.type === 'pending_claim') {
+      t.buyer = form.buyer; t.status = form.awaitingBill ? 'awaiting_bill' : 'pending'; t.paymentMethod = form.paymentMethod;
+      t.claimCategory = form.claimCategory || null;
+      if (isCardId(form.paymentMethod, cards)) cardTouched = form.paymentMethod;
+    } else if (form.type === 'investment') {
+      t.direction = form.direction;
+    } else if (form.type === 'debt_payment') {
+      t.debtId = form.debtId;
+    } else if (form.type === 'loan_given') {
+      t.status = 'outstanding';
+    }
+    const nextTx = [...(transactions || []), t];
+    const updates = { transactions: nextTx };
+    if (cardTouched) updates.cards = cards.map(c => c.id === cardTouched ? { ...c, balance: (c.balance || 0) + amt } : c);
+    if (form.type === 'debt_payment') updates.debts = debts.map(d => d.id === form.debtId ? { ...d, balance: Math.max(0, (d.balance || 0) - amt) } : d);
+    persist(updates);
+    resetForm(form.type);
+    setTab('dashboard');
+  }
+
+  function updateClaimStatus(id, status) { persist({ transactions: (transactions || []).map(t => t.id === id ? { ...t, status } : t) }); }
+  function updateLoanStatus(id) { persist({ transactions: (transactions || []).map(t => t.id === id ? { ...t, status: 'repaid' } : t) }); }
+  function updateFolderClaim(id) { persist({ transactions: (transactions || []).map(t => t.id === id ? { ...t, claimReceived: true } : t) }); }
+
+  function removeTx(id) {
+    const t = (transactions || []).find(x => x.id === id);
+    if (!t || t.deletedAt) return;
+    const nextTx = (transactions || []).map(x => x.id === id ? { ...x, deletedAt: Date.now() } : x);
+    const updates = { transactions: nextTx };
+    if ((t.type === 'personal_expense' || t.type === 'pending_claim') && isCardId(t.paymentMethod, cards)) {
+      updates.cards = cards.map(c => c.id === t.paymentMethod ? { ...c, balance: Math.max(0, (c.balance || 0) - t.amount) } : c);
+    }
+    if (t.type === 'debt_payment' && t.debtId) {
+      updates.debts = debts.map(d => d.id === t.debtId ? { ...d, balance: (d.balance || 0) + t.amount } : d);
+    }
+    persist(updates);
+    showToast(`ลบ "${t.description || TYPE_LABEL[t.type]}" แล้ว — กู้คืนได้จากถังขยะถ้าเผลอกดผิด`, id);
+  }
+  function restoreTx(id) {
+    const t = (transactions || []).find(x => x.id === id);
+    if (!t) return;
+    const nextTx = (transactions || []).map(x => x.id === id ? { ...x, deletedAt: undefined } : x);
+    const updates = { transactions: nextTx };
+    if ((t.type === 'personal_expense' || t.type === 'pending_claim') && isCardId(t.paymentMethod, cards)) {
+      updates.cards = cards.map(c => c.id === t.paymentMethod ? { ...c, balance: (c.balance || 0) + t.amount } : c);
+    }
+    if (t.type === 'debt_payment' && t.debtId) {
+      updates.debts = debts.map(d => d.id === t.debtId ? { ...d, balance: Math.max(0, (d.balance || 0) - t.amount) } : d);
+    }
+    persist(updates);
+    setToast(null);
+  }
+  function purgeTx(id) { persist({ transactions: (transactions || []).filter(x => x.id !== id) }); }
+  function setCategory(id, category) { persist({ transactions: (transactions || []).map(t => t.id === id ? { ...t, category } : t) }); }
+
+  function addCard() {
+    const name = newCardName.trim();
+    if (!name) return;
+    persist({ cards: [...cards, { id: uid(), name, creditLimit: 0, balance: 0 }] });
+    setNewCardName('');
+  }
+  function removeCard(id) { persist({ cards: cards.filter(c => c.id !== id) }); }
+  function payCard(id) { persist({ cards: cards.map(c => c.id === id ? { ...c, balance: 0 } : c) }); }
+  function updateCardLimit(id, val) { persist({ cards: cards.map(c => c.id === id ? { ...c, creditLimit: val } : c) }); }
+
+  function addCashAccount() {
+    const name = newCashName.trim();
+    if (!name) return;
+    persist({ cashAccounts: [...cashAccounts, { id: uid(), name }] });
+    setNewCashName('');
+  }
+  function removeCashAccount(id) { persist({ cashAccounts: cashAccounts.filter(a => a.id !== id) }); }
+
+  function addDebt() {
+    const name = newDebtName.trim();
+    if (!name) return;
+    persist({ debts: [...debts, { id: uid(), name, balance: parseFloat(newDebtAmt) || 0 }] });
+    setNewDebtName(''); setNewDebtAmt('');
+  }
+  function removeDebt(id) { persist({ debts: debts.filter(d => d.id !== id) }); }
+  function updateDebtBalance(id, val) { persist({ debts: debts.map(d => d.id === id ? { ...d, balance: val } : d) }); }
+
+  function addExpenseCategory() {
+    const name = newExpCatName.trim();
+    if (!name || expenseCategories.some(c => c.name === name)) return;
+    persist({ expenseCategories: [...expenseCategories, { name, status: newExpCatStatus.trim() }] });
+    setNewExpCatName(''); setNewExpCatStatus('');
+  }
+  function renameExpenseCategory(oldName, newName) {
+    if (!newName || newName === oldName) return;
+    const nextList = expenseCategories.map(c => c.name === oldName ? { ...c, name: newName } : c);
+    const nextTx = (transactions || []).map(t => t.type === 'personal_expense' && t.category === oldName ? { ...t, category: newName } : t);
+    persist({ transactions: nextTx, expenseCategories: nextList });
+  }
+  function updateExpenseCategoryStatus(name, status) {
+    persist({ expenseCategories: expenseCategories.map(c => c.name === name ? { ...c, status } : c) });
+  }
+  function deleteExpenseCategory(name) {
+    const nextList = expenseCategories.filter(c => c.name !== name);
+    const nextTx = (transactions || []).map(t => t.type === 'personal_expense' && t.category === name ? { ...t, category: null } : t);
+    persist({ transactions: nextTx, expenseCategories: nextList });
+  }
+
+  function addClaimCategory(name) {
+    name = (name || '').trim();
+    if (!name || claimCategories.includes(name)) return;
+    persist({ claimCategories: [...claimCategories, name] });
+  }
+  function renameClaimCategory(oldName, newName) {
+    if (!newName || newName === oldName) return;
+    const nextList = claimCategories.map(c => c === oldName ? newName : c);
+    const nextTx = (transactions || []).map(t => t.type === 'pending_claim' && t.claimCategory === oldName ? { ...t, claimCategory: newName } : t);
+    persist({ transactions: nextTx, claimCategories: nextList });
+  }
+  function deleteClaimCategory(name) {
+    const nextList = claimCategories.filter(c => c !== name);
+    const nextTx = (transactions || []).map(t => t.type === 'pending_claim' && t.claimCategory === name ? { ...t, claimCategory: null } : t);
+    persist({ transactions: nextTx, claimCategories: nextList });
+  }
+
+  function onCardDragStart(e, id) { e.dataTransfer.setData('text/plain', id); }
+  function onColumnDrop(e, category) {
+    e.preventDefault();
+    const id = e.dataTransfer.getData('text/plain');
+    if (id) setCategory(id, category);
+  }
+  function onColumnClick(category) {
+    if (selectedTx) { setCategory(selectedTx, category); setSelectedTx(null); return; }
+    setViewCategory(v => v === category ? null : category);
+  }
+  function toggleSelect(id) { setSelectedTx(sel => sel === id ? null : id); }
+
+  async function aiAssistOne(t) {
+    setAiBusyIds(ids => [...ids, t.id]);
+    const cat = await aiCategorize(t.description, expenseCategories.map(c => c.name));
+    setAiBusyIds(ids => ids.filter(i => i !== t.id));
+    if (cat) setCategory(t.id, cat);
+  }
+
+  async function aiAssistAll() {
+    const targets = unsortedList.filter(t => t.description && t.description.trim());
+    if (targets.length === 0) return;
+    setBulkAiBusy(true);
+    const names = expenseCategories.map(c => c.name);
+    const results = await Promise.all(targets.map(async t => ({ id: t.id, cat: await aiCategorize(t.description, names) })));
+    setBulkAiBusy(false);
+    const map = {};
+    results.forEach(r => { if (r.cat) map[r.id] = r.cat; });
+    persist({ transactions: (transactions || []).map(t => map[t.id] ? { ...t, category: map[t.id] } : t) });
+  }
+
+  const monthTx = useMemo(() => liveTx.filter(t => monthKey(t.date) === reportMonth), [liveTx, reportMonth]);
+  const monthExpenseByCat = useMemo(() => {
+    const m = {};
+    monthTx.filter(t => t.type === 'personal_expense' && t.category).forEach(t => { m[t.category] = (m[t.category] || 0) + t.amount; });
+    return Object.entries(m).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+  }, [monthTx]);
+  const monthUnsortedTotal = useMemo(() => monthTx.filter(t => t.type === 'personal_expense' && !t.category).reduce((s, t) => s + t.amount, 0), [monthTx]);
+  const monthIncome = useMemo(() => monthTx.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0), [monthTx]);
+  const monthExpense = useMemo(() => monthTx.filter(t => t.type === 'personal_expense').reduce((s, t) => s + t.amount, 0), [monthTx]);
+  const trend = useMemo(() => {
+    const now = new Date(reportMonth + '-01T00:00:00');
+    const arr = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = d.toISOString().slice(0, 7);
+      const tx = liveTx.filter(t => monthKey(t.date) === key);
+      arr.push({
+        key, name: monthLabel(key),
+        รายรับ: tx.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0),
+        รายจ่าย: tx.filter(t => t.type === 'personal_expense').reduce((s, t) => s + t.amount, 0)
+      });
+    }
+    return arr;
+  }, [liveTx, reportMonth]);
+
+  function shiftMonth(delta) {
+    const [y, m] = reportMonth.split('-').map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    setReportMonth(d.toISOString().slice(0, 7));
+  }
+
+  if (transactions === null) {
+    return <div className="pft"><style>{CSS}</style><div className="pft-loading">กำลังโหลดข้อมูล...</div></div>;
+  }
+
+  const viewCategoryItems = viewCategory ? liveTx.filter(t => t.type === 'personal_expense' && t.category === viewCategory).sort((a, b) => b.date < a.date ? -1 : 1) : [];
+
+  return (
+    <div className="pft">
+      <style>{CSS}</style>
+      <header className="pft-header">
+        <span className="pft-header-mark">฿</span>
+        <div className="pft-header-txt">
+          <h1>บัญชีเงินผม</h1>
+          <p>เงินส่วนตัว &amp; เงินรอเบิกบริษัท</p>
+        </div>
+        <button className="pft-gear" onClick={() => setTab(tab === 'settings' ? 'dashboard' : 'settings')}><SettingsIcon size={18} /></button>
+      </header>
+
+      <nav className="pft-tabs">
+        {[['dashboard', 'หน้าหลัก', Home], ['add', 'บันทึก', PlusCircle], ['sort', 'จัดหมวด', LayoutGrid], ['claims', 'สรุปค้าง', Clock], ['reports', 'สรุป', PieIcon]].map(([id, label, Icon]) => (
+          <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
+            <Icon size={17} strokeWidth={2} />
+            <span>{label}</span>
+            {id === 'sort' && unsortedList.length > 0 && <em className="pft-badge">{unsortedList.length}</em>}
+            {id === 'claims' && (pendingList.length + folderPendingList.length + loanList.length) > 0 && <em className="pft-badge">{pendingList.length + folderPendingList.length + loanList.length}</em>}
+          </button>
+        ))}
+      </nav>
+
+      <main className="pft-main">
+        {saveErr && <div className="pft-error">{saveErr}</div>}
+
+        {tab === 'dashboard' && (
+          <div className="pft-stack">
+            <div className="pft-card pft-card-main">
+              <span className="pft-card-label">เงินที่ใช้ได้จริงตอนนี้</span>
+              <span className="pft-card-amount">฿{fmtMoney(available)}</span>
+            </div>
+            <div className="pft-card pft-card-amber" onClick={() => setTab('claims')}>
+              <Clock size={20} />
+              <div><span className="pft-card-label">ยอดค้างเบิก/เงินให้ยืมคืน</span><span className="pft-card-amount-sm">฿{fmtMoney(combinedPendingTotal + loanTotal)}</span></div>
+              <ChevronRight size={18} className="pft-chevron" />
+            </div>
+            {debtTotal > 0 && (
+              <div className="pft-card pft-card-purple" onClick={() => setTab('settings')}>
+                <Landmark size={20} />
+                <div><span className="pft-card-label">หนี้สินคงเหลือ</span><span className="pft-card-amount-sm">฿{fmtMoney(debtTotal)}</span></div>
+                <ChevronRight size={18} className="pft-chevron" />
+              </div>
+            )}
+            {unsortedList.length > 0 && (
+              <div className="pft-card pft-card-blue" onClick={() => setTab('sort')}>
+                <LayoutGrid size={20} />
+                <div><span className="pft-card-label">รอจัดหมวด</span><span className="pft-card-amount-sm">{unsortedList.length} รายการ · ฿{fmtMoney(unsortedList.reduce((s, t) => s + t.amount, 0))}</span></div>
+                <ChevronRight size={18} className="pft-chevron" />
+              </div>
+            )}
+
+            <div className="pft-quickrow">
+              <button onClick={() => { resetForm('income'); setTab('add'); }}><ArrowUpCircle size={20} /> รายรับ</button>
+              <button onClick={() => { resetForm('personal_expense'); setTab('add'); }}><ArrowDownCircle size={20} /> รายจ่าย</button>
+              <button onClick={() => { resetForm('pending_claim'); setTab('add'); }}><Landmark size={20} /> รอเบิก</button>
+              <button onClick={() => { resetForm('investment'); setTab('add'); }}><TrendingUp size={20} /> ลงทุน</button>
+              <button onClick={() => { resetForm('debt_payment'); setTab('add'); }}><CreditCard size={20} /> ชำระหนี้</button>
+              <button onClick={() => { resetForm('loan_given'); setTab('add'); }}><HandCoins size={20} /> ให้ยืม</button>
+            </div>
+
+            <h2 className="pft-section-title">รายการล่าสุด</h2>
+            {recent.length === 0 && <p className="pft-empty">ยังไม่มีรายการ เริ่มบันทึกได้เลย</p>}
+            <ul className="pft-list">{recent.map(t => <TxRow key={t.id} t={t} cards={cards} cashAccounts={cashAccounts} onDelete={removeTx} />)}</ul>
+          </div>
+        )}
+
+        {tab === 'add' && (
+          <div className="pft-form">
+            <div className="pft-typeselect">
+              {Object.entries(TYPE_LABEL).map(([id, label]) => (
+                <button type="button" key={id} className={form.type === id ? 'active' : ''} onClick={() => resetForm(id)}>{label}</button>
+              ))}
+            </div>
+
+            <label className="pft-field">
+              <span>จำนวนเงิน (บาท)</span>
+              <input type="number" inputMode="decimal" step="0.01" min="0" placeholder="0.00" autoFocus
+                value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
+            </label>
+
+            <label className="pft-field">
+              <span>รายละเอียด{form.type === 'loan_given' ? ' (ใครยืม)' : ' (ใส่ทีหลังก็ได้)'}</span>
+              <input type="text" placeholder={form.type === 'loan_given' ? 'เช่น ให้เพื่อนชื่อ...ยืม' : 'เช่น ข้าวมันไก่, ค่าปูน'} value={form.description}
+                onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+            </label>
+
+            <label className="pft-field">
+              <span>วันที่</span>
+              <input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
+            </label>
+
+            {form.type === 'personal_expense' && (
+              <label className="pft-field">
+                <span>จ่ายด้วย</span>
+                <PaymentPicker value={form.paymentMethod} cards={cards} cashAccounts={cashAccounts} onChange={v => setForm(f => ({ ...f, paymentMethod: v }))} onManage={() => setTab('settings')} />
+                <span className="pft-hint">ไม่ต้องเลือกหมวดหมู่ตอนนี้ ไปจัดทีหลังที่แท็บ "จัดหมวด" ได้ (ถ้าหมวดที่จัดมีการตั้ง "สถานะ" ไว้ เช่น รอเบิก รายการนี้จะถือเป็นเงินรอเบิกอัตโนมัติ)</span>
+              </label>
+            )}
+
+            {form.type === 'income' && (
+              <>
+                <label className="pft-field">
+                  <span>หมวดหมู่</span>
+                  <select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
+                    <option value="">เลือกหมวดหมู่</option>
+                    {INCOME_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </label>
+                {form.category === 'อื่นๆ' && (
+                  <label className="pft-field"><span>ระบุหมวดหมู่</span>
+                    <input type="text" value={form.customCategory} onChange={e => setForm(f => ({ ...f, customCategory: e.target.value }))} />
+                  </label>
+                )}
+              </>
+            )}
+
+            {form.type === 'pending_claim' && (
+              <>
+                <label className="pft-field">
+                  <span>ใครสำรองจ่าย</span>
+                  <div className="pft-radiorow">
+                    <button type="button" className={form.buyer === 'self' ? 'active' : ''} onClick={() => setForm(f => ({ ...f, buyer: 'self' }))}>ผมเอง</button>
+                    <button type="button" className={form.buyer === 'staff' ? 'active' : ''} onClick={() => setForm(f => ({ ...f, buyer: 'staff' }))}>ลูกน้อง (ผมจ่ายชดเชยแล้ว)</button>
+                  </div>
+                </label>
+                <label className="pft-field">
+                  <span>สถานะเริ่มต้น</span>
+                  <div className="pft-radiorow">
+                    <button type="button" className={!form.awaitingBill ? 'active' : ''} onClick={() => setForm(f => ({ ...f, awaitingBill: false }))}>มีบิลแล้ว (รอตั้งเบิก)</button>
+                    <button type="button" className={form.awaitingBill ? 'active' : ''} onClick={() => setForm(f => ({ ...f, awaitingBill: true }))}>ยังไม่มีบิล (รอบิลก่อน)</button>
+                  </div>
+                </label>
+                <label className="pft-field">
+                  <span>หมวด (ถ้ามี)</span>
+                  <select value={form.claimCategory} onChange={e => setForm(f => ({ ...f, claimCategory: e.target.value }))}>
+                    <option value="">ไม่ระบุหมวด</option>
+                    {claimCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <button type="button" className="pft-linklike" style={{ alignSelf: 'flex-start' }} onClick={() => setTab('settings')}>+ จัดการหมวดรอเบิก</button>
+                </label>
+                <label className="pft-field">
+                  <span>จ่ายด้วย</span>
+                  <PaymentPicker value={form.paymentMethod} cards={cards} cashAccounts={cashAccounts} onChange={v => setForm(f => ({ ...f, paymentMethod: v }))} onManage={() => setTab('settings')} />
+                </label>
+              </>
+            )}
+
+            {form.type === 'investment' && (
+              <label className="pft-field">
+                <span>ทิศทาง</span>
+                <div className="pft-radiorow">
+                  <button type="button" className={form.direction === 'in' ? 'active' : ''} onClick={() => setForm(f => ({ ...f, direction: 'in' }))}>ลงทุนเพิ่ม (เงินออก)</button>
+                  <button type="button" className={form.direction === 'out' ? 'active' : ''} onClick={() => setForm(f => ({ ...f, direction: 'out' }))}>ถอนออก (เงินเข้า)</button>
+                </div>
+              </label>
+            )}
+
+            {form.type === 'debt_payment' && (
+              debts.length === 0 ? (
+                <p className="pft-hint">ยังไม่มีหนี้ในระบบ — <button type="button" className="pft-linklike" onClick={() => setTab('settings')}>ไปเพิ่มที่หน้าตั้งค่า</button></p>
+              ) : (
+                <label className="pft-field">
+                  <span>ชำระหนี้ก้อนไหน</span>
+                  <select value={form.debtId} onChange={e => setForm(f => ({ ...f, debtId: e.target.value }))}>
+                    <option value="">เลือกหนี้</option>
+                    {debts.map(d => <option key={d.id} value={d.id}>{d.name} (คงเหลือ ฿{fmtMoney(d.balance)})</option>)}
+                  </select>
+                </label>
+              )
+            )}
+
+            <button type="button" className="pft-submit" onClick={submit}>บันทึกรายการ</button>
+          </div>
+        )}
+
+        {tab === 'sort' && (
+          <div className="pft-stack">
+            <div className="pft-sortbar">
+              <p className="pft-hint">{unsortedList.length > 0 ? `เหลือ ${unsortedList.length} รายการที่ยังไม่จัด — ` : 'จัดหมวดครบแล้ว 🎉 '}คลิกหรือลากไปยังหมวดด้านล่าง (มือถือ: แตะรายการ แล้วแตะหมวด) · คลิกหมวดเฉยๆ เพื่อดู/แก้/ลากออก</p>
+              {unsortedList.some(t => t.description) && (
+                <button type="button" className="pft-aiall" onClick={aiAssistAll} disabled={bulkAiBusy}>
+                  <Sparkles size={14} /> {bulkAiBusy ? 'กำลังจัด...' : 'ให้ AI ช่วยจัดทั้งหมด'}
+                </button>
+              )}
+            </div>
+
+            <div className="pft-catpills">
+              <button type="button" className="pft-catpill pft-catpill-unsorted"
+                onDragOver={e => e.preventDefault()} onDrop={e => onColumnDrop(e, null)}
+                onClick={() => { if (selectedTx) { setCategory(selectedTx, null); setSelectedTx(null); } }}>
+                ยังไม่จัด <em>{unsortedList.length}</em>
+              </button>
+              {expenseCategories.map(cat => (
+                <button type="button" key={cat.name} className={`pft-catpill ${viewCategory === cat.name ? 'active' : ''}`}
+                  onDragOver={e => e.preventDefault()} onDrop={e => onColumnDrop(e, cat.name)} onClick={() => onColumnClick(cat.name)}>
+                  {cat.name}{cat.status && <i className="pft-pillstatus">{cat.status}</i>} <em>{categoryCounts[cat.name] || 0}</em>
+                </button>
+              ))}
+            </div>
+            <p className="pft-hint">แก้ชื่อ/เพิ่ม/ลบหมวด และตั้งสถานะ (เช่น "รอเบิก") ได้ที่ — <button type="button" className="pft-linklike" onClick={() => setTab('settings')}>หน้าตั้งค่า</button></p>
+
+            {viewCategory && (
+              <div className="pft-catdetail">
+                <div className="pft-catdetail-head">
+                  <strong>{viewCategory}{categoryStatusMap[viewCategory] && <i className="pft-pillstatus">{categoryStatusMap[viewCategory]}</i>}</strong>
+                  <button type="button" onClick={() => setViewCategory(null)}><X size={14} /> ปิด</button>
+                </div>
+                {viewCategoryItems.length === 0 ? <p className="pft-empty-sm">ไม่มีรายการในหมวดนี้</p> : (
+                  <ul className="pft-list">
+                    {viewCategoryItems.map(t => (
+                      <li key={t.id} draggable onDragStart={e => onCardDragStart(e, t.id)} className="pft-histrow pft-histrow-drag">
+                        <div className="pft-tx-info">
+                          <span className="pft-tx-desc">{t.description || '(ไม่มีรายละเอียด)'}</span>
+                          <span className="pft-tx-meta">{t.date} · {paymentLabel(t.paymentMethod, cards, cashAccounts)}</span>
+                        </div>
+                        <select className="pft-histcat" value={t.category || ''} onChange={e => setCategory(t.id, e.target.value || null)}>
+                          <option value="">ยังไม่จัด</option>
+                          {expenseCategories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                        </select>
+                        <span className="pft-tx-amt pft-red">฿{fmtMoney(t.amount)}</span>
+                        <button className="pft-del" onClick={() => removeTx(t.id)}><Trash2 size={14} /></button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <ul className="pft-queue">
+              {unsortedList.map(t => (
+                <li key={t.id} draggable onDragStart={e => onCardDragStart(e, t.id)} onClick={() => toggleSelect(t.id)}
+                  className={`pft-queueitem ${selectedTx === t.id ? 'selected' : ''}`}>
+                  <span className="pft-chip-amt">฿{fmtMoney(t.amount)}</span>
+                  <span className="pft-chip-desc">{t.description || '(ไม่มีรายละเอียด)'}</span>
+                  <span className="pft-chip-meta">{t.date}</span>
+                  {t.description && (
+                    <button type="button" className="pft-chip-ai" onClick={e => { e.stopPropagation(); aiAssistOne(t); }} disabled={aiBusyIds.includes(t.id)}>
+                      <Sparkles size={12} /> {aiBusyIds.includes(t.id) ? '...' : 'AI'}
+                    </button>
+                  )}
+                </li>
+              ))}
+              {unsortedList.length === 0 && <p className="pft-empty">รายการที่จัดหมวดแล้วดูย้อนหลังได้ที่แท็บ "สรุป" หรือคลิกหมวดด้านบน</p>}
+            </ul>
+          </div>
+        )}
+
+        {tab === 'claims' && (
+          <div className="pft-stack">
+            <div className="pft-card pft-card-amber">
+              <Clock size={20} />
+              <div><span className="pft-card-label">รวมยอดค้างเบิก</span><span className="pft-card-amount-sm">฿{fmtMoney(combinedPendingTotal)}</span></div>
+            </div>
+
+            {statusTotals.length > 1 && (
+              <div className="pft-statusrow">
+                {statusTotals.map(s => (
+                  <div key={s.label} className="pft-statusstat">
+                    <span>{s.label}</span>
+                    <b>฿{fmtMoney(s.total)}</b>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {folderPendingGrouped.length > 0 && (
+              <>
+                <h2 className="pft-section-title">รายจ่ายรอเบิก (จากหมวดที่ตั้งสถานะ)</h2>
+                {folderPendingGrouped.map(g => (
+                  <div key={g.name} className="pft-claimgroup">
+                    <div className="pft-claimgroup-head"><span>{g.name} <i className="pft-statuschip">{g.status}</i></span><b>฿{fmtMoney(g.total)}</b></div>
+                    <ul className="pft-list">
+                      {g.items.map(t => (
+                        <li key={t.id} className="pft-claim">
+                          <div className="pft-claim-info">
+                            <span className="pft-claim-desc">{t.description || '(ไม่มีรายละเอียด)'}</span>
+                            <span className="pft-claim-meta">{t.date} · {paymentLabel(t.paymentMethod, cards, cashAccounts)}</span>
+                          </div>
+                          <span className="pft-claim-amt">฿{fmtMoney(t.amount)}</span>
+                          <div className="pft-claim-actions">
+                            <span className="pft-status pft-status-pending">{g.status}</span>
+                            <button onClick={() => updateFolderClaim(t.id)}><Check size={14} /> ได้รับคืนแล้ว</button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </>
+            )}
+
+            <h2 className="pft-section-title">รายการรอเบิกที่บันทึกแบบเต็ม</h2>
+            {pendingGrouped.length === 0 && <p className="pft-empty">ไม่มีรายการค้างเบิก 🎉</p>}
+            {pendingGrouped.map(g => (
+              <div key={g.key} className="pft-claimgroup">
+                <div className="pft-claimgroup-head"><span>{g.label}</span><b>฿{fmtMoney(g.total)}</b></div>
+                <ul className="pft-list">
+                  {g.items.map(t => (
+                    <li key={t.id} className="pft-claim">
+                      <div className="pft-claim-info">
+                        <span className="pft-claim-desc">{t.description || 'ไม่มีรายละเอียด'}</span>
+                        <span className="pft-claim-meta">{t.date} · {t.buyer === 'staff' ? 'ลูกน้องซื้อ' : 'ผมซื้อเอง'} · {paymentLabel(t.paymentMethod, cards, cashAccounts)}</span>
+                      </div>
+                      <span className="pft-claim-amt">฿{fmtMoney(t.amount)}</span>
+                      <div className="pft-claim-actions">
+                        <span className={`pft-status pft-status-${t.status}`}>{CLAIM_STATUS_LABEL[t.status]}</span>
+                        {t.status !== 'received' && (
+                          <button onClick={() => updateClaimStatus(t.id, CLAIM_STATUS_ORDER[CLAIM_STATUS_ORDER.indexOf(t.status) + 1])}>
+                            <Check size={14} /> {CLAIM_STATUS_LABEL[CLAIM_STATUS_ORDER[CLAIM_STATUS_ORDER.indexOf(t.status) + 1]]}
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+
+            <h2 className="pft-section-title">เงินให้คนอื่นยืม {loanTotal > 0 ? `(฿${fmtMoney(loanTotal)})` : ''}</h2>
+            {loanList.length === 0 ? <p className="pft-empty">ไม่มีรายการค้างคืน</p> : (
+              <ul className="pft-list">
+                {loanList.map(t => (
+                  <li key={t.id} className="pft-claim">
+                    <div className="pft-claim-info">
+                      <span className="pft-claim-desc">{t.description || 'ไม่มีรายละเอียด'}</span>
+                      <span className="pft-claim-meta">{t.date}</span>
+                    </div>
+                    <span className="pft-claim-amt">฿{fmtMoney(t.amount)}</span>
+                    <div className="pft-claim-actions">
+                      <span className="pft-status pft-status-pending">ค้างคืน</span>
+                      <button onClick={() => updateLoanStatus(t.id)}><Check size={14} /> คืนแล้ว</button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {tab === 'reports' && (
+          <div className="pft-stack">
+            <div className="pft-monthpicker">
+              <button onClick={() => shiftMonth(-1)}><ChevronLeft size={18} /></button>
+              <span>{monthLabel(reportMonth)}</span>
+              <button onClick={() => shiftMonth(1)}><ChevronRight size={18} /></button>
+            </div>
+            <div className="pft-summary2col">
+              <div><span>รายรับเดือนนี้</span><strong className="pft-green">฿{fmtMoney(monthIncome)}</strong></div>
+              <div><span>รายจ่ายเดือนนี้</span><strong className="pft-red">฿{fmtMoney(monthExpense)}</strong></div>
+            </div>
+            {monthUnsortedTotal > 0 && <p className="pft-hint">ยังมีรายจ่าย ฿{fmtMoney(monthUnsortedTotal)} ที่ยังไม่ได้จัดหมวด (ไม่รวมในกราฟด้านล่าง) — <button type="button" className="pft-linklike" onClick={() => setTab('sort')}>ไปจัดหมวด</button></p>}
+
+            <h2 className="pft-section-title">รายจ่ายแยกตามหมวด</h2>
+            {monthExpenseByCat.length === 0 ? <p className="pft-empty">ยังไม่มีรายจ่ายที่จัดหมวดแล้วในเดือนนี้</p> : (
+              <div className="pft-chartbox">
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie data={monthExpenseByCat} dataKey="value" nameKey="name" innerRadius={50} outerRadius={80} paddingAngle={2}>
+                      {monthExpenseByCat.map((e, i) => <Cell key={e.name} fill={CAT_COLORS[i % CAT_COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={v => `฿${fmtMoney(v)}`} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <ul className="pft-legend">
+                  {monthExpenseByCat.map((e, i) => (<li key={e.name}><span style={{ background: CAT_COLORS[i % CAT_COLORS.length] }} />{e.name}<b>฿{fmtMoney(e.value)}</b></li>))}
+                </ul>
+              </div>
+            )}
+
+            <h2 className="pft-section-title">แนวโน้ม 6 เดือน</h2>
+            <div className="pft-chartbox">
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={trend}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#E4E1D8" />
+                  <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#5B5748' }} />
+                  <YAxis tick={{ fontSize: 11, fill: '#5B5748' }} width={40} />
+                  <Tooltip formatter={v => `฿${fmtMoney(v)}`} />
+                  <Legend />
+                  <Bar dataKey="รายรับ" fill="#1F6D5A" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="รายจ่าย" fill="#B5432B" radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <h2 className="pft-section-title">ประวัติรายการเดือนนี้ ({monthTx.length} รายการ)</h2>
+            {monthTx.length === 0 ? <p className="pft-empty">ไม่มีรายการเดือนนี้</p> : (
+              <ul className="pft-list">
+                {[...monthTx].sort((a, b) => b.date < a.date ? -1 : 1).map(t => (
+                  <li key={t.id} className="pft-histrow">
+                    <div className="pft-tx-info">
+                      <span className="pft-tx-desc">{t.description || TYPE_LABEL[t.type]}</span>
+                      <span className="pft-tx-meta">{t.date} · {TYPE_LABEL[t.type]}{t.type === 'personal_expense' ? ` · ${paymentLabel(t.paymentMethod, cards, cashAccounts)}` : ''}</span>
+                    </div>
+                    {t.type === 'personal_expense' ? (
+                      <select className="pft-histcat" value={t.category || ''} onChange={e => setCategory(t.id, e.target.value || null)}>
+                        <option value="">ยังไม่จัด</option>
+                        {expenseCategories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                      </select>
+                    ) : <span className="pft-histcat pft-histcat-static">{t.category || t.claimCategory || CLAIM_STATUS_LABEL[t.status] || ''}</span>}
+                    <span className={`pft-tx-amt ${t.type === 'income' || (t.type === 'investment' && t.direction === 'out') ? 'pft-green' : 'pft-red'}`}>฿{fmtMoney(t.amount)}</span>
+                    <button className="pft-del" onClick={() => removeTx(t.id)}><Trash2 size={14} /></button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {tab === 'settings' && (
+          <div className="pft-stack">
+            <h2 className="pft-section-title" style={{ marginTop: 0 }}><Wallet size={16} style={{ verticalAlign: '-3px', marginRight: '6px' }} />บัญชีเงินสด/ธนาคาร</h2>
+            <div className="pft-addcard">
+              <input type="text" placeholder="เช่น เงินสดในกระเป๋า, บัญชีกสิกร" value={newCashName} onChange={e => setNewCashName(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCashAccount()} />
+              <button type="button" onClick={addCashAccount}>เพิ่ม</button>
+            </div>
+            {cashAccounts.length === 0 && <p className="pft-empty">ยังไม่มีบัญชี — ถ้าไม่เพิ่ม ระบบจะใช้ "เงินสด/โอน" แบบรวมแทน</p>}
+            <ul className="pft-list">
+              {cashAccounts.map(a => (
+                <li key={a.id} className="pft-tx">
+                  <Wallet size={18} className="pft-green" />
+                  <div className="pft-tx-info"><span className="pft-tx-desc">{a.name}</span></div>
+                  <button className="pft-del" onClick={() => removeCashAccount(a.id)}><Trash2 size={14} /></button>
+                </li>
+              ))}
+            </ul>
+
+            <h2 className="pft-section-title"><CreditCard size={16} style={{ verticalAlign: '-3px', marginRight: '6px' }} />บัตรเครดิต</h2>
+            <div className="pft-addcard">
+              <input type="text" placeholder="ชื่อบัตร เช่น กสิกร แพลทินัม" value={newCardName} onChange={e => setNewCardName(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCard()} />
+              <button type="button" onClick={addCard}>เพิ่ม</button>
+            </div>
+            {cards.length === 0 && <p className="pft-empty">ยังไม่มีบัตร</p>}
+            <ul className="pft-list">
+              {cards.map(c => {
+                const used = c.balance || 0; const limit = c.creditLimit || 0;
+                const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+                return (
+                  <li key={c.id} className="pft-cardrow">
+                    <div className="pft-cardrow-top">
+                      <CreditCard size={18} className="pft-blue" />
+                      <span className="pft-cardrow-name">{c.name}</span>
+                      <button className="pft-del" onClick={() => removeCard(c.id)}><Trash2 size={14} /></button>
+                    </div>
+                    {limit > 0 && <div className="pft-cardrow-bar"><div className="pft-cardrow-barfill" style={{ width: pct + '%' }} /></div>}
+                    <div className="pft-cardrow-fields">
+                      <span>ใช้ไปแล้ว <b>฿{fmtMoney(used)}</b>{limit > 0 ? ` / ฿${fmtMoney(limit)}` : ''}</span>
+                      <label>วงเงิน <input type="number" min="0" value={c.creditLimit || ''} placeholder="0" onChange={e => updateCardLimit(c.id, parseFloat(e.target.value) || 0)} /></label>
+                    </div>
+                    <button type="button" className="pft-paidbtn" onClick={() => payCard(c.id)}>ชำระบัตรแล้ว (รีเซ็ตยอดใช้เป็น 0)</button>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <h2 className="pft-section-title"><Landmark size={16} style={{ verticalAlign: '-3px', marginRight: '6px' }} />หนี้สิน/ผ่อนชำระ</h2>
+            <div className="pft-addcard">
+              <input type="text" placeholder="ชื่อหนี้ เช่น ผ่อนรถ" value={newDebtName} onChange={e => setNewDebtName(e.target.value)} />
+              <input type="number" placeholder="ยอดคงเหลือ" style={{ maxWidth: 110 }} value={newDebtAmt} onChange={e => setNewDebtAmt(e.target.value)} onKeyDown={e => e.key === 'Enter' && addDebt()} />
+              <button type="button" onClick={addDebt}>เพิ่ม</button>
+            </div>
+            {debts.length === 0 && <p className="pft-empty">ยังไม่มีหนี้ในระบบ</p>}
+            <ul className="pft-list">
+              {debts.map(d => (
+                <li key={d.id} className="pft-cardrow">
+                  <div className="pft-cardrow-top">
+                    <Landmark size={18} className="pft-amber" />
+                    <span className="pft-cardrow-name">{d.name}</span>
+                    <button className="pft-del" onClick={() => removeDebt(d.id)}><Trash2 size={14} /></button>
+                  </div>
+                  <div className="pft-cardrow-fields">
+                    <label>ยอดคงเหลือ <input type="number" min="0" value={d.balance || ''} placeholder="0" onChange={e => updateDebtBalance(d.id, parseFloat(e.target.value) || 0)} /></label>
+                  </div>
+                </li>
+              ))}
+            </ul>
+
+            <h2 className="pft-section-title"><LayoutGrid size={16} style={{ verticalAlign: '-3px', marginRight: '6px' }} />หมวดหมู่รายจ่ายส่วนตัว</h2>
+            <p className="pft-hint">แก้ชื่อ/ลบได้ ตั้งสถานะเองได้ (เช่น "รอเบิก", "รอบิล") — ถ้าตั้งสถานะไว้ รายการในหมวดนั้นจะถือเป็นเงินรอเบิกอัตโนมัติ ไปโผล่ในแท็บ "รอเบิก" เอง เว้นว่างไว้ถ้าเป็นรายจ่ายทั่วไป</p>
+            <div className="pft-addcat-row">
+              <input type="text" placeholder="ชื่อหมวดใหม่" value={newExpCatName} onChange={e => setNewExpCatName(e.target.value)} />
+              <input type="text" placeholder="สถานะ (ไม่บังคับ)" value={newExpCatStatus} onChange={e => setNewExpCatStatus(e.target.value)} onKeyDown={e => e.key === 'Enter' && addExpenseCategory()} />
+              <button type="button" onClick={addExpenseCategory}>เพิ่ม</button>
+            </div>
+            {expenseCategories.length === 0 && <p className="pft-empty">ยังไม่มีหมวด</p>}
+            <ul className="pft-list">
+              {expenseCategories.map(c => (
+                <li key={c.name} className="pft-catrow2">
+                  <input className="pft-catrename" defaultValue={c.name}
+                    onBlur={e => { const v = e.target.value.trim(); if (v && v !== c.name) renameExpenseCategory(c.name, v); else e.target.value = c.name; }}
+                    onKeyDown={e => e.key === 'Enter' && e.target.blur()} />
+                  <input className="pft-catstatus" defaultValue={c.status || ''} placeholder="สถานะ"
+                    onBlur={e => updateExpenseCategoryStatus(c.name, e.target.value.trim())}
+                    onKeyDown={e => e.key === 'Enter' && e.target.blur()} />
+                  <button className="pft-del" onClick={() => deleteExpenseCategory(c.name)}><Trash2 size={14} /></button>
+                </li>
+              ))}
+            </ul>
+
+            <h2 className="pft-section-title"><Clock size={16} style={{ verticalAlign: '-3px', marginRight: '6px' }} />หมวดรายการรอเบิก/รอบิล</h2>
+            <p className="pft-hint">ใช้จัดกลุ่มรายการที่บันทึกแบบ "รายจ่ายรอเบิก" เต็มรูปแบบ (มีผู้สำรองจ่าย/สถานะ 4 ขั้น)</p>
+            <CategoryEditor categories={claimCategories} placeholder="เพิ่มหมวดใหม่ เช่น วัสดุก่อสร้าง(รอบิล)"
+              onAdd={addClaimCategory} onRename={renameClaimCategory} onDelete={deleteClaimCategory} />
+
+            <h2 className="pft-section-title"><Trash2 size={16} style={{ verticalAlign: '-3px', marginRight: '6px' }} />ถังขยะ{trashList.length > 0 ? ` (${trashList.length})` : ''}</h2>
+            {trashList.length === 0 ? <p className="pft-empty">ถังขยะว่าง</p> : (
+              <>
+                <p className="pft-hint">รายการในถังขยะจะถูกลบถาวรอัตโนมัติหลังผ่านไป 7 วัน</p>
+                <ul className="pft-list">
+                  {trashList.map(t => {
+                    const daysLeft = Math.max(0, 7 - Math.floor((Date.now() - t.deletedAt) / (24 * 60 * 60 * 1000)));
+                    return (
+                      <li key={t.id} className="pft-trashrow">
+                        <div className="pft-tx-info">
+                          <span className="pft-tx-desc">{t.description || TYPE_LABEL[t.type]}</span>
+                          <span className="pft-tx-meta">{t.date} · ฿{fmtMoney(t.amount)} · ลบถาวรใน {daysLeft} วัน</span>
+                        </div>
+                        <button type="button" className="pft-restorebtn" onClick={() => restoreTx(t.id)}>กู้คืน</button>
+                        <button className="pft-del" onClick={() => purgeTx(t.id)}><Trash2 size={14} /></button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
+            )}
+          </div>
+        )}
+      </main>
+
+      {toast && (
+        <div className="pft-toast">
+          <span>{toast.message}</span>
+          <button type="button" className="pft-toast-undo" onClick={() => restoreTx(toast.undoId)}>เลิกทำ</button>
+          <button type="button" className="pft-toast-x" onClick={() => setToast(null)}><X size={14} /></button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CategoryEditor({ categories, onRename, onDelete, onAdd, placeholder }) {
+  const [draft, setDraft] = useState('');
+  return (
+    <>
+      <div className="pft-addcard">
+        <input type="text" placeholder={placeholder} value={draft} onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { onAdd(draft); setDraft(''); } }} />
+        <button type="button" onClick={() => { onAdd(draft); setDraft(''); }}>เพิ่ม</button>
+      </div>
+      {categories.length === 0 && <p className="pft-empty">ยังไม่มีหมวด</p>}
+      <ul className="pft-list">
+        {categories.map(cat => (
+          <li key={cat} className="pft-tx">
+            <input className="pft-catrename" defaultValue={cat}
+              onBlur={e => { const v = e.target.value.trim(); if (v && v !== cat) onRename(cat, v); else e.target.value = cat; }}
+              onKeyDown={e => e.key === 'Enter' && e.target.blur()} />
+            <button className="pft-del" onClick={() => onDelete(cat)}><Trash2 size={14} /></button>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function PaymentPicker({ value, cards, cashAccounts, onChange, onManage }) {
+  return (
+    <div className="pft-paymentpicker">
+      {cashAccounts.length === 0 && (
+        <button type="button" className={value === 'cash' ? 'active' : ''} onClick={() => onChange('cash')}><Banknote size={14} /> เงินสด/โอน</button>
+      )}
+      {cashAccounts.map(a => (
+        <button type="button" key={a.id} className={value === a.id ? 'active' : ''} onClick={() => onChange(a.id)}><Wallet size={14} /> {a.name}</button>
+      ))}
+      {cards.map(c => (
+        <button type="button" key={c.id} className={value === c.id ? 'active' : ''} onClick={() => onChange(c.id)}><CreditCard size={14} /> {c.name}</button>
+      ))}
+      <button type="button" className="pft-managebtn" onClick={onManage}>+ จัดการบัญชี/บัตร</button>
+    </div>
+  );
+}
+
+function TxRow({ t, cards, cashAccounts, onDelete }) {
+  const icon = t.type === 'income' ? <ArrowUpCircle size={18} className="pft-green" /> :
+    t.type === 'personal_expense' ? <ArrowDownCircle size={18} className="pft-red" /> :
+    t.type === 'pending_claim' ? <Landmark size={18} className="pft-amber" /> :
+    t.type === 'debt_payment' ? <CreditCard size={18} className="pft-purple" /> :
+    t.type === 'loan_given' ? <HandCoins size={18} className="pft-amber" /> :
+    <TrendingUp size={18} className="pft-blue" />;
+  const sign = t.type === 'income' ? '+' : t.type === 'investment' ? (t.direction === 'in' ? '-' : '+') : '-';
+  const metaParts = [t.date];
+  if (t.type === 'personal_expense') metaParts.push(t.category ? t.category : 'ยังไม่จัด', paymentLabel(t.paymentMethod, cards, cashAccounts));
+  if (t.type === 'income') metaParts.push(t.category);
+  if (t.type === 'pending_claim') metaParts.push(t.claimCategory, TYPE_LABEL[t.type]);
+  if (t.type === 'loan_given') metaParts.push(t.status === 'repaid' ? 'คืนแล้ว' : 'ค้างคืน');
+  return (
+    <li className="pft-tx">
+      {icon}
+      <div className="pft-tx-info">
+        <span className="pft-tx-desc">{t.description || TYPE_LABEL[t.type]}</span>
+        <span className="pft-tx-meta">{metaParts.filter(Boolean).join(' · ')}</span>
+      </div>
+      <span className={`pft-tx-amt ${sign === '+' ? 'pft-green' : 'pft-red'}`}>{sign}฿{fmtMoney(t.amount)}</span>
+      <button className="pft-del" onClick={() => onDelete(t.id)}><Trash2 size={14} /></button>
+    </li>
+  );
+}
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap');
+.pft { font-family: 'Sarabun', sans-serif; background: #F5F4EE; color: #1F2A24; max-width: 560px; margin: 0 auto; min-height: 100%; padding-bottom: 84px; box-sizing: border-box; }
+.pft * { box-sizing: border-box; }
+.pft-loading { padding: 40px; text-align: center; color: #5B5748; }
+.pft-header { display: flex; align-items: center; gap: 12px; padding: 20px 20px 16px; }
+.pft-header-mark { width: 40px; height: 40px; border-radius: 8px; background: #1F6D5A; color: #F5F4EE; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; flex-shrink: 0; }
+.pft-header-txt { flex: 1; }
+.pft-header h1 { font-size: 18px; font-weight: 700; margin: 0; }
+.pft-header p { font-size: 12px; color: #6E6A5B; margin: 2px 0 0; }
+.pft-gear { background: none; border: 1px solid #E4E1D8; border-radius: 8px; padding: 7px; color: #4E4A3D; cursor: pointer; }
+.pft-tabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid #E4E1D8; overflow-x: auto; }
+.pft-tabs button { flex: 1; min-width: 58px; background: none; border: none; padding: 9px 3px; display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 10.5px; color: #8A8676; cursor: pointer; position: relative; border-bottom: 2px solid transparent; font-family: inherit; white-space: nowrap; }
+.pft-tabs button.active { color: #1F6D5A; border-bottom-color: #1F6D5A; font-weight: 600; }
+.pft-badge { position: absolute; top: 2px; right: 10%; background: #B5432B; color: #fff; font-size: 9px; font-style: normal; border-radius: 999px; min-width: 15px; height: 15px; display: flex; align-items: center; justify-content: center; padding: 0 3px; }
+.pft-main { padding: 16px; }
+.pft-error { background: #F6DCD5; color: #7A2E1B; padding: 10px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; }
+.pft-stack { display: flex; flex-direction: column; gap: 14px; }
+.pft-card { background: #FFFFFF; border: 1px solid #E4E1D8; border-radius: 12px; padding: 18px; }
+.pft-card-main { display: flex; flex-direction: column; gap: 4px; }
+.pft-card-label { font-size: 12.5px; color: #6E6A5B; }
+.pft-card-amount { font-size: 32px; font-weight: 700; color: #1F6D5A; font-variant-numeric: tabular-nums; }
+.pft-card-amber { display: flex; align-items: center; gap: 12px; border-left: 4px solid #C98A2C; cursor: pointer; }
+.pft-card-amber svg:first-child { color: #C98A2C; flex-shrink: 0; }
+.pft-card-blue { display: flex; align-items: center; gap: 12px; border-left: 4px solid #2F6690; cursor: pointer; }
+.pft-card-blue svg:first-child { color: #2F6690; flex-shrink: 0; }
+.pft-card-purple { display: flex; align-items: center; gap: 12px; border-left: 4px solid #7A5C8E; cursor: pointer; }
+.pft-card-purple svg:first-child { color: #7A5C8E; flex-shrink: 0; }
+.pft-card-amber > div, .pft-card-blue > div, .pft-card-purple > div { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.pft-card-amount-sm { font-size: 18px; font-weight: 700; color: #A9701F; font-variant-numeric: tabular-nums; }
+.pft-card-blue .pft-card-amount-sm { color: #2F6690; }
+.pft-card-purple .pft-card-amount-sm { color: #7A5C8E; }
+.pft-chevron { color: #8A8676; }
+.pft-quickrow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.pft-quickrow button { display: flex; flex-direction: column; align-items: center; gap: 6px; background: #FFFFFF; border: 1px solid #E4E1D8; border-radius: 10px; padding: 12px 4px; font-size: 11.5px; color: #1F2A24; cursor: pointer; font-family: inherit; }
+.pft-quickrow button:hover { border-color: #1F6D5A; }
+.pft-quickrow button svg { color: #1F6D5A; }
+.pft-section-title { font-size: 14px; font-weight: 600; margin: 4px 0 0; color: #1F2A24; }
+.pft-empty { font-size: 13px; color: #8A8676; padding: 8px 0; }
+.pft-empty-sm { font-size: 12px; color: #A8A48F; padding: 4px 0; }
+.pft-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.pft-tx { display: flex; align-items: center; gap: 10px; background: #FFFFFF; border: 1px solid #E9E6DC; border-radius: 10px; padding: 10px 12px; }
+.pft-tx-info { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.pft-tx-desc { font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pft-tx-meta { font-size: 11px; color: #8A8676; }
+.pft-tx-amt { font-size: 13.5px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pft-green { color: #1F6D5A; } .pft-red { color: #B5432B; } .pft-amber { color: #C98A2C; } .pft-blue { color: #2F6690; } .pft-purple { color: #7A5C8E; }
+.pft-del { background: none; border: none; color: #C9C5B6; cursor: pointer; padding: 4px; flex-shrink: 0; }
+.pft-del:hover { color: #B5432B; }
+.pft-form { display: flex; flex-direction: column; gap: 14px; }
+.pft-typeselect { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.pft-typeselect button { font-family: inherit; font-size: 11px; padding: 9px 2px; border-radius: 8px; border: 1px solid #E4E1D8; background: #FFFFFF; color: #6E6A5B; cursor: pointer; }
+.pft-typeselect button.active { background: #1F6D5A; border-color: #1F6D5A; color: #fff; font-weight: 600; }
+.pft-field { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: #4E4A3D; }
+.pft-field input, .pft-field select { font-family: inherit; font-size: 15px; padding: 10px 12px; border-radius: 8px; border: 1px solid #D8D4C8; background: #FFFFFF; color: #1F2A24; }
+.pft-field input:focus, .pft-field select:focus { outline: 2px solid #1F6D5A; outline-offset: 1px; }
+.pft-hint { font-size: 11.5px; color: #A9701F; margin: 0; }
+.pft-linklike { background: none; border: none; color: #2F6690; text-decoration: underline; cursor: pointer; font-size: 11.5px; padding: 0; font-family: inherit; }
+.pft-radiorow { display: flex; gap: 8px; flex-wrap: wrap; }
+.pft-radiorow button { flex: 1; min-width: 130px; font-family: inherit; font-size: 12.5px; padding: 9px 4px; border-radius: 8px; border: 1px solid #D8D4C8; background: #FFFFFF; color: #4E4A3D; cursor: pointer; }
+.pft-radiorow button.active { background: #1F2A24; border-color: #1F2A24; color: #fff; }
+.pft-paymentpicker { display: flex; flex-wrap: wrap; gap: 8px; }
+.pft-paymentpicker button { display: flex; align-items: center; gap: 5px; font-family: inherit; font-size: 12.5px; padding: 8px 12px; border-radius: 999px; border: 1px solid #D8D4C8; background: #FFFFFF; color: #4E4A3D; cursor: pointer; }
+.pft-paymentpicker button.active { background: #1F2A24; border-color: #1F2A24; color: #fff; }
+.pft-managebtn { border-style: dashed !important; color: #8A8676 !important; }
+.pft-submit { margin-top: 6px; background: #1F6D5A; color: #fff; border: none; border-radius: 10px; padding: 14px; font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer; }
+.pft-submit:hover { background: #185A4A; }
+.pft-claimgroup { display: flex; flex-direction: column; gap: 8px; }
+.pft-statusrow { display: flex; flex-wrap: wrap; gap: 8px; }
+.pft-statusstat { flex: 1; min-width: 110px; background: #FFFFFF; border: 1px solid #E4E1D8; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; }
+.pft-statusstat span { font-size: 11px; color: #6E6A5B; }
+.pft-statusstat b { font-size: 15px; font-variant-numeric: tabular-nums; color: #8A5D14; }
+.pft-claimgroup-head { display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 600; color: #4E4A3D; padding: 0 2px; }
+.pft-claim { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; background: #FFFFFF; border: 1px solid #E9E6DC; border-radius: 10px; padding: 12px; }
+.pft-claim-info { display: flex; flex-direction: column; grid-column: 1; }
+.pft-claim-desc { font-size: 13.5px; font-weight: 500; }
+.pft-claim-meta { font-size: 11px; color: #8A8676; }
+.pft-claim-amt { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; grid-column: 2; text-align: right; }
+.pft-claim-actions { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+.pft-status, .pft-statuschip { font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600; }
+.pft-status-awaiting_bill { background: #F0E4D8; color: #8A5D2E; }
+.pft-status-pending { background: #F6E4C6; color: #8A5D14; }
+.pft-status-claimed { background: #DCE7DE; color: #2C5C41; }
+.pft-status-received { background: #DDE9E4; color: #1F6D5A; }
+.pft-claim-actions button { display: flex; align-items: center; gap: 4px; font-family: inherit; font-size: 11.5px; background: #1F2A24; color: #fff; border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+.pft-monthpicker { display: flex; align-items: center; justify-content: center; gap: 16px; }
+.pft-monthpicker button { background: #FFFFFF; border: 1px solid #E4E1D8; border-radius: 8px; padding: 6px; cursor: pointer; color: #1F2A24; }
+.pft-monthpicker span { font-size: 15px; font-weight: 600; min-width: 90px; text-align: center; }
+.pft-summary2col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pft-summary2col > div { background: #FFFFFF; border: 1px solid #E4E1D8; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+.pft-summary2col span { font-size: 11.5px; color: #6E6A5B; }
+.pft-summary2col strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.pft-chartbox { background: #FFFFFF; border: 1px solid #E4E1D8; border-radius: 12px; padding: 12px; }
+.pft-legend { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pft-legend li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.pft-legend li span { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.pft-legend li b { margin-left: auto; font-variant-numeric: tabular-nums; }
+.pft-sortbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.pft-sortbar .pft-hint { flex: 1; min-width: 180px; }
+.pft-aiall { display: flex; align-items: center; gap: 5px; font-family: inherit; font-size: 12px; background: #1F6D5A; color: #fff; border: none; border-radius: 999px; padding: 7px 13px; cursor: pointer; white-space: nowrap; }
+.pft-aiall:disabled { opacity: 0.6; cursor: default; }
+.pft-catpills { display: flex; flex-wrap: wrap; gap: 8px; }
+.pft-catpill { display: flex; align-items: center; gap: 6px; font-family: inherit; font-size: 12.5px; background: #FFFFFF; border: 1px solid #D8D4C8; border-radius: 999px; padding: 8px 14px; cursor: pointer; color: #1F2A24; }
+.pft-catpill:hover { border-color: #1F6D5A; }
+.pft-catpill.active { border-color: #1F6D5A; background: #EFF6F2; }
+.pft-catpill em { font-style: normal; background: #EFEAD8; color: #6E6A5B; border-radius: 999px; padding: 1px 7px; font-size: 11px; }
+.pft-catpill-unsorted { border-style: dashed; background: #FBF6EB; border-color: #E9D9AE; }
+.pft-pillstatus, .pft-statuschip { font-style: normal; background: #F6E4C6; color: #8A5D14; border-radius: 999px; padding: 1px 7px; font-size: 10px; margin-left: 4px; }
+.pft-catdetail { background: #FBFAF6; border: 1px solid #E4E1D8; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.pft-catdetail-head { display: flex; align-items: center; justify-content: space-between; font-size: 13.5px; }
+.pft-catdetail-head button { display: flex; align-items: center; gap: 4px; font-family: inherit; font-size: 12px; background: #FFFFFF; border: 1px solid #D8D4C8; border-radius: 999px; padding: 5px 11px; cursor: pointer; color: #4E4A3D; }
+.pft-queue { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 55vh; overflow-y: auto; }
+.pft-queueitem { background: #FBF6EB; border: 1px solid #E9D9AE; border-radius: 8px; padding: 9px 10px; display: flex; align-items: center; gap: 10px; cursor: grab; }
+.pft-queueitem.selected { border-color: #1F6D5A; box-shadow: 0 0 0 2px rgba(31,109,90,0.2); background: #EFF6F2; }
+.pft-queueitem .pft-chip-amt { min-width: 68px; }
+.pft-queueitem .pft-chip-desc { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pft-queueitem .pft-chip-meta { white-space: nowrap; }
+.pft-chip-amt { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pft-chip-desc { font-size: 11.5px; color: #4E4A3D; }
+.pft-chip-meta { font-size: 10px; color: #A8A48F; }
+.pft-chip-ai { display: flex; align-items: center; gap: 3px; font-family: inherit; font-size: 10px; background: #EFEAD8; border: none; border-radius: 999px; padding: 3px 7px; color: #8A5D14; cursor: pointer; flex-shrink: 0; }
+.pft-histrow { display: flex; align-items: center; gap: 10px; background: #FFFFFF; border: 1px solid #E9E6DC; border-radius: 10px; padding: 9px 12px; flex-wrap: wrap; }
+.pft-histrow-drag { cursor: grab; }
+.pft-histcat { font-family: inherit; font-size: 11.5px; padding: 5px 8px; border-radius: 7px; border: 1px solid #D8D4C8; background: #FBFAF6; color: #4E4A3D; max-width: 110px; }
+.pft-histcat-static { border: none; background: #F0EEE5; padding: 5px 9px; }
+.pft-addcard { display: flex; gap: 8px; }
+.pft-addcard input { flex: 1; font-family: inherit; font-size: 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid #D8D4C8; }
+.pft-addcard button { font-family: inherit; font-size: 13px; background: #1F6D5A; color: #fff; border: none; border-radius: 8px; padding: 0 16px; cursor: pointer; }
+.pft-addcat-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.pft-addcat-row input { flex: 1; min-width: 100px; font-family: inherit; font-size: 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid #D8D4C8; }
+.pft-addcat-row button { font-family: inherit; font-size: 13px; background: #1F6D5A; color: #fff; border: none; border-radius: 8px; padding: 0 16px; cursor: pointer; }
+.pft-catrename { flex: 1; font-family: inherit; font-size: 13.5px; padding: 6px 8px; border-radius: 6px; border: 1px solid transparent; background: transparent; }
+.pft-catrename:focus { border-color: #D8D4C8; background: #FBFAF6; outline: none; }
+.pft-catrow2 { display: flex; align-items: center; gap: 8px; background: #FFFFFF; border: 1px solid #E9E6DC; border-radius: 10px; padding: 8px 10px; }
+.pft-catstatus { width: 100px; font-family: inherit; font-size: 12px; padding: 6px 8px; border-radius: 6px; border: 1px solid #D8D4C8; background: #FBFAF6; color: #8A5D14; }
+.pft-cardrow { display: flex; flex-direction: column; gap: 8px; background: #FFFFFF; border: 1px solid #E9E6DC; border-radius: 10px; padding: 12px; }
+.pft-cardrow-top { display: flex; align-items: center; gap: 8px; }
+.pft-cardrow-name { flex: 1; font-size: 14px; font-weight: 600; }
+.pft-cardrow-bar { height: 6px; border-radius: 999px; background: #EDEAE0; overflow: hidden; }
+.pft-cardrow-barfill { height: 100%; background: #C98A2C; border-radius: 999px; }
+.pft-cardrow-fields { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 12px; color: #4E4A3D; }
+.pft-cardrow-fields b { font-variant-numeric: tabular-nums; }
+.pft-cardrow-fields label { display: flex; align-items: center; gap: 6px; }
+.pft-cardrow-fields input { width: 100px; font-family: inherit; font-size: 12.5px; padding: 6px 8px; border-radius: 6px; border: 1px solid #D8D4C8; }
+.pft-paidbtn { align-self: flex-start; font-family: inherit; font-size: 11.5px; background: #F0EEE5; color: #4E4A3D; border: 1px solid #D8D4C8; border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+.pft-paidbtn:hover { background: #E4E1D8; }
+.pft-trashrow { display: flex; align-items: center; gap: 10px; background: #FFFFFF; border: 1px solid #E9E6DC; border-radius: 10px; padding: 9px 12px; }
+.pft-restorebtn { font-family: inherit; font-size: 11.5px; background: #1F6D5A; color: #fff; border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+.pft-toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: #1F2A24; color: #fff; padding: 10px 10px 10px 16px; border-radius: 999px; display: flex; align-items: center; gap: 10px; font-size: 12.5px; box-shadow: 0 6px 18px rgba(0,0,0,0.28); z-index: 50; max-width: calc(100% - 32px); }
+.pft-toast-undo { font-family: inherit; font-size: 12px; font-weight: 600; background: none; border: none; color: #7FD9BC; cursor: pointer; white-space: nowrap; }
+.pft-toast-x { background: none; border: none; color: #A8A48F; cursor: pointer; display: flex; padding: 4px; }
+@media (min-width: 640px) { .pft { border-left: 1px solid #E4E1D8; border-right: 1px solid #E4E1D8; } }
+`;
