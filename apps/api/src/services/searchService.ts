@@ -22,17 +22,19 @@ export async function searchTransactions(client: DbClient, userId: string, filte
   }
 
   const res = await client.query(
-    `SELECT * FROM transactions
-     WHERE user_id = $1 AND deleted_at IS NULL
-       AND ($2::text IS NULL OR search_vector @@ plainto_tsquery('simple', $2))
-       AND ($3::date IS NULL OR transaction_date >= $3)
-       AND ($4::date IS NULL OR transaction_date <= $4)
-       AND ($5::uuid IS NULL OR category_id = $5)
-       AND ($6::transaction_type IS NULL OR type = $6)
-       AND ($7::claim_status IS NULL OR status = $7)
-       AND ($8::bigint IS NULL OR base_amount >= $8)
-       AND ($9::bigint IS NULL OR base_amount <= $9)
-     ORDER BY transaction_date DESC, created_at DESC
+    `SELECT t.*, c.name AS category_name, c.is_claimable AS category_is_claimable
+     FROM transactions t
+     LEFT JOIN categories c ON c.id = t.category_id
+     WHERE t.user_id = $1 AND t.deleted_at IS NULL
+       AND ($2::text IS NULL OR t.search_vector @@ plainto_tsquery('simple', $2))
+       AND ($3::date IS NULL OR t.transaction_date >= $3)
+       AND ($4::date IS NULL OR t.transaction_date <= $4)
+       AND ($5::uuid IS NULL OR t.category_id = $5)
+       AND ($6::transaction_type IS NULL OR t.type = $6)
+       AND ($7::claim_status IS NULL OR t.status = $7)
+       AND ($8::bigint IS NULL OR t.base_amount >= $8)
+       AND ($9::bigint IS NULL OR t.base_amount <= $9)
+     ORDER BY t.transaction_date DESC, t.created_at DESC
      LIMIT 200`,
     [
       userId,

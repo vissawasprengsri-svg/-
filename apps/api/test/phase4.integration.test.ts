@@ -110,7 +110,9 @@ describe.skipIf(!reachable)('Phase 4 (real Postgres): budgets, recurring, search
 
     const next = budgets.find((b) => b.periodStart === '2020-02-01' && b.name === 'งบ rollover');
     expect(next).toBeTruthy();
-    expect(next!.amount).toBe('50000'); // no spend recorded in Jan 2020 -> full amount carries forward
+    // No spend recorded in Jan 2020 -> the entire 500.00 is unspent leftover,
+    // added on top of the next period's own 500.00 -> 1000.00 total.
+    expect(next!.amount).toBe('100000');
     expect(next!.isActive).toBe(true);
   });
 

@@ -7,7 +7,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { withTransaction, pool } from '../src/db/pool.js';
 import {
   createTransaction,
@@ -42,7 +42,10 @@ describe.skipIf(!reachable)('transactionService (real Postgres, Phase 1 safety m
     return String(res.rows[0].current_balance);
   }
 
-  beforeAll(async () => {
+  // Each test asserts an *absolute* balance, so every test must start from
+  // the same known-zero state rather than accumulating whatever the
+  // previous test left behind.
+  beforeEach(async () => {
     if (!reachable) return;
     await pool.query('UPDATE accounts SET current_balance = 0 WHERE id = $1', [ACCOUNT_ID]);
   });
@@ -200,9 +203,13 @@ describe.skipIf(!reachable)('transactionService (real Postgres, Phase 1 safety m
     const sessionId = randomUUID();
     const clientId = randomUUID();
     const txDate = '2020-06-01'; // deliberately old, before the 0003 seed migration's CURRENT_DATE rate
+    // This test mutates this exact (base, quote, date) row below, so delete
+    // any leftover row from a previous run first — otherwise a re-run finds
+    // the *previous* run's already-corrected rate instead of inserting 33.
+    await pool.query(`DELETE FROM exchange_rates WHERE base_code='USD' AND quote_code='THB' AND rate_date=$1`, [txDate]);
     await pool.query(
       `INSERT INTO exchange_rates (base_code, quote_code, rate, rate_date, source)
-       VALUES ('USD','THB',33.00,$1,'manual') ON CONFLICT (base_code, quote_code, rate_date) DO NOTHING`,
+       VALUES ('USD','THB',33.00,$1,'manual')`,
       [txDate]
     );
 

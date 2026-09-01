@@ -7,8 +7,11 @@ import { runIdempotent } from '../middleware/idempotencyRunner.js';
 import {
   createTransaction,
   listActiveTransactions,
+  listUnsortedExpenses,
   softDeleteTransaction,
+  updateClaimReceived,
   updateClaimStatus,
+  updateTransactionCategory,
 } from '../services/transactionService.js';
 import { searchTransactions } from '../services/searchService.js';
 import { Errors } from '../domain/errors.js';
@@ -37,6 +40,14 @@ transactionsRouter.get(
   '/',
   asyncHandler(async (req, res) => {
     const transactions = await withTransaction((client) => listActiveTransactions(client, req.userId));
+    res.json({ transactions });
+  })
+);
+
+transactionsRouter.get(
+  '/unsorted',
+  asyncHandler(async (req, res) => {
+    const transactions = await withTransaction((client) => listUnsortedExpenses(client, req.userId));
     res.json({ transactions });
   })
 );
@@ -97,6 +108,32 @@ transactionsRouter.post(
         req.params.id!,
         status as (typeof CLAIM_STATUS_ORDER)[number]
       );
+      return { status: 200, body: { transaction } };
+    });
+  })
+);
+
+const categorySchema = z.object({ categoryId: z.string().uuid().nullable() });
+
+transactionsRouter.patch(
+  '/:id/category',
+  asyncHandler(async (req, res) => {
+    const { categoryId } = categorySchema.parse(req.body);
+    const transaction = await withTransaction((client) =>
+      updateTransactionCategory(client, { userId: req.userId, sessionId: req.sessionId }, req.params.id!, categoryId)
+    );
+    res.json({ transaction });
+  })
+);
+
+const claimReceivedSchema = z.object({ received: z.boolean() });
+
+transactionsRouter.post(
+  '/:id/claim-received',
+  asyncHandler(async (req, res) => {
+    const { received } = claimReceivedSchema.parse(req.body);
+    await runIdempotent(req, res, 'POST /transactions/:id/claim-received', async (client) => {
+      const transaction = await updateClaimReceived(client, { userId: req.userId, sessionId: req.sessionId }, req.params.id!, received);
       return { status: 200, body: { transaction } };
     });
   })

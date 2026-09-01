@@ -1,14 +1,22 @@
 import { useEffect, useState } from 'react';
+import { X } from 'lucide-react';
 import type { NotificationPreference, NotificationRuleCode, UserSettings } from '@finance/shared';
 import { NOTIFICATION_RULE_CODES } from '@finance/shared';
 import { api, ApiError } from '../api/client';
 import { useI18n } from '../i18n/I18nContext';
+import { AccountsSection } from './settings/AccountsSection';
+import { DebtsSection } from './settings/DebtsSection';
+import { CategoriesSection } from './settings/CategoriesSection';
+import { TrashSection } from './settings/TrashSection';
+import { LocaleSection } from './settings/LocaleSection';
+import { BudgetsPage } from './BudgetsPage';
+import { RecurringPage } from './RecurringPage';
 
-export function SettingsPage({ onError }: { onError: (message: string) => void }) {
+function NotificationSettingsSection({ onError }: { onError: (message: string) => void }) {
   const { t } = useI18n();
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [preferences, setPreferences] = useState<Record<NotificationRuleCode, NotificationPreference> | null>(null);
-  const [checkResult, setCheckResult] = useState<string>('');
+  const [checkResult, setCheckResult] = useState('');
 
   async function refresh() {
     try {
@@ -45,53 +53,33 @@ export function SettingsPage({ onError }: { onError: (message: string) => void }
   if (!settings || !preferences) return <p className="hint">{t('settings.loading')}</p>;
 
   return (
-    <div className="stack">
+    <>
       <section className="form-card">
         <h2>{t('settings.thresholdsTitle')}</h2>
         <div className="form-row">
           <label>
             <span>{t('settings.claimOverdueDays')}</span>
-            <input
-              type="number"
-              value={settings.claimOverdueDays}
-              onChange={(e) => saveSettings({ claimOverdueDays: Number(e.target.value) })}
-            />
+            <input type="number" value={settings.claimOverdueDays} onChange={(e) => saveSettings({ claimOverdueDays: Number(e.target.value) })} />
           </label>
           <label>
             <span>{t('settings.cardUsageAlertPct')}</span>
-            <input
-              type="number"
-              value={settings.cardUsageAlertPct}
-              onChange={(e) => saveSettings({ cardUsageAlertPct: Number(e.target.value) })}
-            />
+            <input type="number" value={settings.cardUsageAlertPct} onChange={(e) => saveSettings({ cardUsageAlertPct: Number(e.target.value) })} />
           </label>
         </div>
         <div className="form-row">
           <label>
             <span>{t('settings.dailyReminderTime')}</span>
-            <input
-              type="time"
-              value={settings.dailyReminderTime ?? ''}
-              onChange={(e) => saveSettings({ dailyReminderTime: e.target.value || null })}
-            />
+            <input type="time" value={settings.dailyReminderTime ?? ''} onChange={(e) => saveSettings({ dailyReminderTime: e.target.value || null })} />
           </label>
         </div>
         <div className="form-row">
           <label>
             <span>{t('settings.quietHoursStart')}</span>
-            <input
-              type="time"
-              value={settings.quietHoursStart ?? ''}
-              onChange={(e) => saveSettings({ quietHoursStart: e.target.value || null })}
-            />
+            <input type="time" value={settings.quietHoursStart ?? ''} onChange={(e) => saveSettings({ quietHoursStart: e.target.value || null })} />
           </label>
           <label>
             <span>{t('settings.quietHoursEnd')}</span>
-            <input
-              type="time"
-              value={settings.quietHoursEnd ?? ''}
-              onChange={(e) => saveSettings({ quietHoursEnd: e.target.value || null })}
-            />
+            <input type="time" value={settings.quietHoursEnd ?? ''} onChange={(e) => saveSettings({ quietHoursEnd: e.target.value || null })} />
           </label>
         </div>
         <p className="hint">{t('settings.quietHoursHint')}</p>
@@ -99,47 +87,37 @@ export function SettingsPage({ onError }: { onError: (message: string) => void }
 
       <section className="form-card">
         <h2>{t('settings.prefTitle')}</h2>
-        <table className="pref-table">
-          <thead>
-            <tr>
-              <th>{t('settings.colType')}</th>
-              <th>{t('settings.colInApp')}</th>
-              <th>{t('settings.colPush')}</th>
-              <th>{t('settings.colEmail')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {NOTIFICATION_RULE_CODES.map((code) => {
-              const pref = preferences[code];
-              return (
-                <tr key={code}>
-                  <td>{t(`rule.${code}`)}</td>
-                  <td>
-                    <input
-                      type="checkbox"
-                      checked={pref.inAppEnabled}
-                      onChange={(e) => togglePref(code, 'inAppEnabled', e.target.checked)}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="checkbox"
-                      checked={pref.pushEnabled}
-                      onChange={(e) => togglePref(code, 'pushEnabled', e.target.checked)}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="checkbox"
-                      checked={pref.emailEnabled}
-                      onChange={(e) => togglePref(code, 'emailEnabled', e.target.checked)}
-                    />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="table-scroll">
+          <table className="pref-table">
+            <thead>
+              <tr>
+                <th>{t('settings.colType')}</th>
+                <th>{t('settings.colInApp')}</th>
+                <th>{t('settings.colPush')}</th>
+                <th>{t('settings.colEmail')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {NOTIFICATION_RULE_CODES.map((code) => {
+                const pref = preferences[code];
+                return (
+                  <tr key={code}>
+                    <td>{t(`rule.${code}`)}</td>
+                    <td>
+                      <input type="checkbox" checked={pref.inAppEnabled} onChange={(e) => togglePref(code, 'inAppEnabled', e.target.checked)} />
+                    </td>
+                    <td>
+                      <input type="checkbox" checked={pref.pushEnabled} onChange={(e) => togglePref(code, 'pushEnabled', e.target.checked)} />
+                    </td>
+                    <td>
+                      <input type="checkbox" checked={pref.emailEnabled} onChange={(e) => togglePref(code, 'emailEnabled', e.target.checked)} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section className="form-card">
@@ -160,6 +138,36 @@ export function SettingsPage({ onError }: { onError: (message: string) => void }
         </button>
         {checkResult && <p className="hint">{checkResult}</p>}
       </section>
+    </>
+  );
+}
+
+export function SettingsPage({ onClose, onError, onChanged }: { onClose: () => void; onError: (message: string) => void; onChanged: () => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="settings-overlay">
+      <div className="settings-header">
+        <h1>{t('settings.title')}</h1>
+        <button className="icon-btn" onClick={onClose}>
+          <X size={20} />
+        </button>
+      </div>
+      <div className="settings-body stack">
+        <AccountsSection onError={onError} />
+        <DebtsSection onError={onError} />
+        <CategoriesSection onError={onError} />
+        <div className="settings-subsection">
+          <h1 className="settings-section-title">{t('settings.sections.budgets')}</h1>
+          <BudgetsPage onError={onError} />
+        </div>
+        <div className="settings-subsection">
+          <h1 className="settings-section-title">{t('settings.sections.recurring')}</h1>
+          <RecurringPage onError={onError} />
+        </div>
+        <NotificationSettingsSection onError={onError} />
+        <LocaleSection />
+        <TrashSection onError={onError} onRestored={onChanged} />
+      </div>
     </div>
   );
 }

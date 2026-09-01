@@ -12,6 +12,10 @@ import { currenciesRouter } from './routes/currencies.js';
 import { budgetsRouter } from './routes/budgets.js';
 import { recurringRulesRouter } from './routes/recurringRules.js';
 import { reportsRouter } from './routes/reports.js';
+import { accountsRouter } from './routes/accounts.js';
+import { debtsRouter } from './routes/debts.js';
+import { categoriesRouter } from './routes/categories.js';
+import { claimsSummaryRouter } from './routes/claimsSummary.js';
 
 export function createApp() {
   const app = express();
@@ -31,6 +35,10 @@ export function createApp() {
   app.use('/api/budgets', budgetsRouter);
   app.use('/api/recurring-rules', recurringRulesRouter);
   app.use('/api/reports', reportsRouter);
+  app.use('/api/accounts', accountsRouter);
+  app.use('/api/debts', debtsRouter);
+  app.use('/api/categories', categoriesRouter);
+  app.use('/api/claims-summary', claimsSummaryRouter);
 
   app.use(errorHandler);
   return app;

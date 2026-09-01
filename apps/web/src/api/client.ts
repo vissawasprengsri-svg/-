@@ -1,7 +1,11 @@
 import type {
+  AccountWithCard,
   Budget,
+  Category,
+  ClaimsSummary,
   ClaimStatus,
   CreateTransactionInput,
+  Debt,
   LocaleCode,
   MonthlySummary,
   NotificationItem,
@@ -12,6 +16,7 @@ import type {
   RecurrenceFreq,
   Transaction,
   TransactionSearchFilters,
+  TransactionType,
   TrendPoint,
   UserSettings,
 } from '@finance/shared';
@@ -144,4 +149,40 @@ export const api = {
 
   monthlyReport: (month: string) => request<{ summary: MonthlySummary }>('GET', `/reports/monthly?month=${month}`),
   trendReport: (months: number) => request<{ points: TrendPoint[] }>('GET', `/reports/trend?months=${months}`),
+
+  listUnsortedExpenses: () => request<{ transactions: Transaction[] }>('GET', '/transactions/unsorted'),
+  setTransactionCategory: (id: string, categoryId: string | null) =>
+    request<{ transaction: Transaction }>('PATCH', `/transactions/${id}/category`, { categoryId }),
+  setClaimReceived: (id: string, received: boolean) =>
+    request<{ transaction: Transaction }>('POST', `/transactions/${id}/claim-received`, { received }),
+
+  getClaimsSummary: () => request<{ summary: ClaimsSummary }>('GET', '/claims-summary'),
+
+  listAccounts: () => request<{ accounts: AccountWithCard[] }>('GET', '/accounts'),
+  createAccount: (input: {
+    name: string;
+    kind: AccountWithCard['kind'];
+    currencyCode: string;
+    creditLimitMajor?: string;
+    dueDay?: number | null;
+    statementDay?: number | null;
+  }) => request<{ account: AccountWithCard }>('POST', '/accounts', input),
+  archiveAccount: (id: string) => request<void>('DELETE', `/accounts/${id}`),
+  updateCreditLimit: (id: string, creditLimitMajor: string) =>
+    request<{ ok: true }>('PATCH', `/accounts/${id}/credit-limit`, { creditLimitMajor }),
+
+  listDebts: () => request<{ debts: Debt[] }>('GET', '/debts'),
+  createDebt: (input: { name: string; currencyCode: string; balanceMajor: string; isReceivable?: boolean }) =>
+    request<{ debt: Debt }>('POST', '/debts', input),
+  updateDebtBalance: (id: string, balanceMajor: string) => request<{ debt: Debt }>('PATCH', `/debts/${id}/balance`, { balanceMajor }),
+  archiveDebt: (id: string) => request<void>('DELETE', `/debts/${id}`),
+
+  listCategories: (appliesTo?: TransactionType) =>
+    request<{ categories: Category[] }>('GET', `/categories${appliesTo ? `?appliesTo=${appliesTo}` : ''}`),
+  createCategory: (input: { name: string; appliesTo: TransactionType[]; isClaimable?: boolean; defaultClaimStatus?: ClaimStatus | null }) =>
+    request<{ category: Category }>('POST', '/categories', input),
+  renameCategory: (id: string, name: string) => request<{ category: Category }>('PATCH', `/categories/${id}`, { name }),
+  updateCategoryClaimSettings: (id: string, patch: { isClaimable: boolean; defaultClaimStatus: ClaimStatus | null }) =>
+    request<{ category: Category }>('PATCH', `/categories/${id}/claim-settings`, patch),
+  deleteCategory: (id: string) => request<void>('DELETE', `/categories/${id}`),
 };

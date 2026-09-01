@@ -49,6 +49,13 @@ export interface Account {
   deletedAt: string | null;
 }
 
+/** Account + its credit_cards row (when kind='credit_card'), as returned by GET /api/accounts. */
+export interface AccountWithCard extends Account {
+  creditLimit: MoneyMinor | null;
+  dueDay: number | null;
+  statementDay: number | null;
+}
+
 export interface Debt {
   id: string;
   userId: string;
@@ -99,6 +106,9 @@ export interface Transaction {
   occurredAt: string | null;
 
   categoryId: string | null;
+  /** Denormalized, joined at read-time for display — not a stored column. */
+  categoryName: string | null;
+  categoryIsClaimable: boolean;
   accountId: string | null;
   toAccountId: string | null;
   debtId: string | null;
@@ -155,6 +165,21 @@ export interface CreateTransactionInput {
   buyer?: string | null;
   direction?: InvestmentDirection | null;
   clientId: string; // client-generated UUID, used for idempotent dedupe
+}
+
+export interface ClaimGroup {
+  categoryId: string | null;
+  categoryName: string;
+  defaultClaimStatus: ClaimStatus | null;
+  total: MoneyMinor;
+  items: Transaction[];
+}
+
+export interface ClaimsSummary {
+  totalOutstanding: MoneyMinor;
+  folderGroups: ClaimGroup[]; // personal_expense filed under a claimable category
+  claimGroups: ClaimGroup[]; // full pending_claim records
+  loans: Transaction[]; // loan_given not yet repaid
 }
 
 export interface Budget {

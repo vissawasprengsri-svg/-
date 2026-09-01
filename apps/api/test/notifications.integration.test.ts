@@ -35,6 +35,11 @@ describe.skipIf(!reachable)('notification rule engine (real Postgres)', () => {
   beforeAll(async () => {
     if (!reachable) return;
     await pool.query(`DELETE FROM notifications WHERE user_id = $1`, [USER_ID]);
+    // This suite's first test inserts a fresh "ค่ายาเก่า" claim transaction
+    // every run without ever cleaning it up — re-running against the same
+    // persistent database (there's no per-run disposable container here)
+    // would otherwise accumulate one more match every time.
+    await pool.query(`DELETE FROM transactions WHERE user_id = $1 AND description = 'ค่ายาเก่า'`, [USER_ID]);
   });
 
   it('flags a pending claim older than the configured overdue window, and dedupes on re-run', async () => {

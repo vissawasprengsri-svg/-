@@ -101,7 +101,7 @@ export function BudgetsPage({ onError }: { onError: (message: string) => void })
             <li key={b.id} className="budget-row">
               <div className="budget-row-head">
                 <span className="desc">
-                  {b.name} {!b.isActive && <em className="pft-pillstatus">{t('budgets.inactive')}</em>}
+                  {b.name} {!b.isActive && <em className="inactive-badge">{t('budgets.inactive')}</em>}
                 </span>
                 {b.isActive && (
                   <button className="del" onClick={() => archive(b.id)}>

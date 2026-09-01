@@ -23,6 +23,8 @@ export function mapTransactionRow(row: Record<string, unknown>): Transaction {
     transactionDate: iso(row.transaction_date)!.slice(0, 10),
     occurredAt: iso(row.occurred_at),
     categoryId: (row.category_id as string | null) ?? null,
+    categoryName: (row.category_name as string | null) ?? null,
+    categoryIsClaimable: Boolean(row.category_is_claimable),
     accountId: (row.account_id as string | null) ?? null,
     toAccountId: (row.to_account_id as string | null) ?? null,
     debtId: (row.debt_id as string | null) ?? null,

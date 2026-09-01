@@ -9,14 +9,21 @@
  */
 import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
-import { pool, withTransaction } from '../db/pool.js';
-import { purgeExpiredTrash } from '../services/transactionService.js';
-import { runDueRecurringRules } from '../services/recurringService.js';
-import { rolloverEndedBudgets } from '../services/budgetService.js';
-import { runNotificationChecksForUser } from '../domain/notifications/runChecks.js';
-import { sendWeeklyDigest } from '../domain/notifications/digest.js';
 
 async function main(): Promise<void> {
+  const { ensureDatabaseUrl } = await import('../db/bootstrap.js');
+  await ensureDatabaseUrl();
+
+  const { pool, withTransaction } = await import('../db/pool.js');
+  const { runMigrations } = await import('../db/migrate.js');
+  await runMigrations(pool);
+
+  const { purgeExpiredTrash } = await import('../services/transactionService.js');
+  const { runDueRecurringRules } = await import('../services/recurringService.js');
+  const { rolloverEndedBudgets } = await import('../services/budgetService.js');
+  const { runNotificationChecksForUser } = await import('../domain/notifications/runChecks.js');
+  const { sendWeeklyDigest } = await import('../domain/notifications/digest.js');
+
   const purged = await withTransaction((client) => purgeExpiredTrash(client));
   console.log(`purged ${purged} trashed transaction(s) older than 30 days`);
 

@@ -256,9 +256,25 @@ export async function updateClaimStatus(
   return mapTransactionRow(after);
 }
 
+const WITH_CATEGORY_SELECT = `
+  SELECT t.*, c.name AS category_name, c.is_claimable AS category_is_claimable
+  FROM transactions t
+  LEFT JOIN categories c ON c.id = t.category_id
+`;
+
 export async function listActiveTransactions(client: DbClient, userId: string): Promise<Transaction[]> {
   const res = await client.query(
-    'SELECT * FROM transactions WHERE user_id = $1 AND deleted_at IS NULL ORDER BY transaction_date DESC, created_at DESC LIMIT 200',
+    `${WITH_CATEGORY_SELECT} WHERE t.user_id = $1 AND t.deleted_at IS NULL ORDER BY t.transaction_date DESC, t.created_at DESC LIMIT 200`,
+    [userId]
+  );
+  return res.rows.map(mapTransactionRow);
+}
+
+export async function listUnsortedExpenses(client: DbClient, userId: string): Promise<Transaction[]> {
+  const res = await client.query(
+    `${WITH_CATEGORY_SELECT}
+     WHERE t.user_id = $1 AND t.deleted_at IS NULL AND t.type = 'personal_expense' AND t.category_id IS NULL
+     ORDER BY t.transaction_date DESC, t.created_at DESC`,
     [userId]
   );
   return res.rows.map(mapTransactionRow);
@@ -266,10 +282,93 @@ export async function listActiveTransactions(client: DbClient, userId: string): 
 
 export async function listTrash(client: DbClient, userId: string): Promise<Transaction[]> {
   const res = await client.query(
-    'SELECT * FROM transactions WHERE user_id = $1 AND deleted_at IS NOT NULL ORDER BY deleted_at DESC',
+    `${WITH_CATEGORY_SELECT} WHERE t.user_id = $1 AND t.deleted_at IS NOT NULL ORDER BY t.deleted_at DESC`,
     [userId]
   );
   return res.rows.map(mapTransactionRow);
+}
+
+export async function updateTransactionCategory(
+  client: DbClient,
+  ctx: Ctx,
+  transactionId: string,
+  categoryId: string | null
+): Promise<Transaction> {
+  const beforeRes = await client.query(
+    'SELECT * FROM transactions WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE',
+    [transactionId, ctx.userId]
+  );
+  const before = beforeRes.rows[0];
+  if (!before) throw Errors.notFound('transaction');
+
+  const afterRes = await client.query('UPDATE transactions SET category_id = $1 WHERE id = $2 RETURNING *', [
+    categoryId,
+    transactionId,
+  ]);
+  const after = afterRes.rows[0];
+
+  const txSnapshot: RowSnapshot = { table: 'transactions', id: transactionId, before, after };
+  await recordCommand(client, { ...ctx, commandType: 'UPDATE_CLAIM_STATUS' }, [txSnapshot]);
+  await recordAudit(client, {
+    userId: ctx.userId,
+    entityType: 'transaction',
+    entityId: transactionId,
+    action: 'update',
+    before,
+    after,
+    actorId: ctx.userId,
+  });
+
+  const withCategory = await client.query(`${WITH_CATEGORY_SELECT} WHERE t.id = $1`, [transactionId]);
+  return mapTransactionRow(withCategory.rows[0]);
+}
+
+/**
+ * Toggles the reimbursement flag for either a folder-categorized expense (a
+ * personal_expense filed under a claimable category) or a loan_given being
+ * repaid — both use the same `claim_received` column. Reaching
+ * received=true credits the paying/lending account back, mirroring
+ * updateClaimStatus's 'received' step.
+ */
+export async function updateClaimReceived(client: DbClient, ctx: Ctx, transactionId: string, received: boolean): Promise<Transaction> {
+  const beforeRes = await client.query(
+    `SELECT * FROM transactions WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+       AND type IN ('personal_expense', 'loan_given') FOR UPDATE`,
+    [transactionId, ctx.userId]
+  );
+  const before = beforeRes.rows[0];
+  if (!before) throw Errors.notFound('transaction');
+  if (Boolean(before.claim_received) === received) {
+    const withCategory = await client.query(`${WITH_CATEGORY_SELECT} WHERE t.id = $1`, [transactionId]);
+    return mapTransactionRow(withCategory.rows[0]);
+  }
+
+  const afterRes = await client.query('UPDATE transactions SET claim_received = $1 WHERE id = $2 RETURNING *', [
+    received,
+    transactionId,
+  ]);
+  const after = afterRes.rows[0];
+
+  let ledgerSnapshots: RowSnapshot[] = [];
+  if (before.account_id) {
+    const delta = received ? String(before.amount) : `-${before.amount}`;
+    ledgerSnapshots = await applyLedgerEffects(client, [{ kind: 'account', id: before.account_id, delta }], 1);
+  }
+
+  const txSnapshot: RowSnapshot = { table: 'transactions', id: transactionId, before, after };
+  await recordCommand(client, { ...ctx, commandType: 'UPDATE_CLAIM_STATUS' }, [txSnapshot, ...ledgerSnapshots]);
+  await recordAudit(client, {
+    userId: ctx.userId,
+    entityType: 'transaction',
+    entityId: transactionId,
+    action: 'status_change',
+    before,
+    after,
+    actorId: ctx.userId,
+  });
+
+  const withCategory = await client.query(`${WITH_CATEGORY_SELECT} WHERE t.id = $1`, [transactionId]);
+  return mapTransactionRow(withCategory.rows[0]);
 }
 
 /** Hard-purges trash older than 30 days. Intended to run from a scheduled job, never from a request handler. */

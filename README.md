@@ -16,14 +16,25 @@ docker-compose.yml    Local Postgres 15 for development.
 ## เริ่มต้นใช้งาน
 
 ```bash
-docker compose up -d
 npm install
-npm run migrate -w apps/api
-npm run dev:api      # http://localhost:4000
+npm run dev:api      # http://localhost:4000 — auto-starts a local Postgres, no Docker needed
 npm run dev:web      # http://localhost:5173 (proxies /api -> :4000)
 ```
 
-Copy `apps/api/.env.example` to `apps/api/.env` if you need a non-default `DATABASE_URL`.
+That's it — no Docker, no separate Postgres install, no manual migration step. The first `npm run dev:api` takes ~15-20s (downloads/initializes a local Postgres cluster once); every run after that is a couple of seconds. See [Embedded Postgres](#embedded-postgres--zero-setup-local-db) below for how this works and how to opt out of it.
+
+Copy `apps/api/.env.example` to `apps/api/.env` and set `DATABASE_URL` if you'd rather point at `docker compose up -d` or a real Postgres instance instead — setting `DATABASE_URL` always takes priority over the embedded one.
+
+## Embedded Postgres — zero-setup local DB
+
+[embedded.ts](apps/api/src/db/embedded.ts) runs a real Postgres server as a local background process — no Docker, no separate install — using the `embedded-postgres` npm package's bundled binaries. A few things worth knowing:
+
+- **It persists across restarts on purpose.** `npm run dev:api` restarts on every file save (tsx watch); Postgres does not restart with it — every call just checks "is it already up" and reuses it. `npm run stop:db -w apps/api` shuts it down explicitly (cleanly, via `pg_ctl stop -m fast`, so the next start doesn't have to run crash recovery).
+- **Started through `pg_ctl`, not by spawning `postgres.exe` directly** — and that detail is load-bearing on Windows. Spawning the server directly forces an unwinnable choice: it has to outlive this Node process (`detached: true` → Win32 `DETACHED_PROCESS`), but Microsoft documents that flag as mutually exclusive with `CREATE_NO_WINDOW` (`windowsHide`) — Node keeps the former and silently drops the latter, so a console window pops up on every cold start. `pg_ctl` is PostgreSQL's own process manager: detaching the server is its job, and it exits as soon as the server is up, so it can be run as an ordinary hidden short-lived child. No window, server still outlives us, and it refuses to start a second server against a data directory that already has one instead of racing it and orphaning processes.
+- **Non-ASCII project paths break Postgres's Windows binaries outright** — this repo's own path (`Claude_รายรับรายจ่าย`) is one. The binaries get copied once to an ASCII-only cache (`~/.finance-tracker-embedded-pg`) and run from there; this is invisible to everything else, since only the native binary invocation cares about this, not `pg`/SQL.
+- **Bootstrapping order matters**: [bootstrap.ts](apps/api/src/db/bootstrap.ts) resolves `DATABASE_URL` (embedded or explicit) *before* anything imports `db/pool.ts`, via dynamic `import()` — a top-level `import { pool }` would construct the connection pool before the URL is known.
+- Runs migrations automatically on every start (`runMigrations()` in [migrate.ts](apps/api/src/db/migrate.ts) is idempotent — already-applied files are skipped), so there's no separate `npm run migrate` step to remember.
+- **`runHidden` resolves on `exit`, not `close`** — deliberately. `close` also waits for the child's stdio streams to close, and `pg_ctl start` leaves behind a postmaster that inherits those pipe handles and holds them open for its whole lifetime, so `close` never fires even though `pg_ctl` exited seconds earlier. This one caused a silent hang where Postgres was demonstrably up but the API never finished booting.
 
 ## Phase 1 — ความปลอดภัยของข้อมูล (this drop)
 
@@ -88,6 +99,25 @@ Phase 4 in the prompt bundles ten very different features (budgets, recurring tr
 - **Backup & restore**: needs a storage destination (where does the backup go?) — same category as OCR/export above.
 - **Accessibility**: not addressed as a dedicated pass in this drop; the existing markup uses semantic `<label>`/`<button>` and the color palette wasn't contrast-audited. Worth a focused accessibility pass over the whole UI rather than a partial one here.
 
+## UX rebuild — matching the original app's information architecture
+
+After Phase 4, the web app's UI was a generic settings-heavy form layout — technically correct but much harder to actually use day-to-day than the original single-file prototype (`รับจ่าย.txt`) it replaced. Rebuilt the frontend's navigation and screens to match that original's density and workflow, on top of the same Phase 1-4 backend (no backend safety mechanics were touched):
+
+- **5-tab bottom nav** (icon + label, matching the original): [หน้าหลัก](apps/web/src/pages/HomeDashboard.tsx) (big available-cash card, outstanding-claims card, 6-button quick-add grid, recent list), [บันทึก](apps/web/src/pages/AddTransactionPage.tsx) (full form for all 7 transaction types with real account/card/debt/category pickers), [จัดหมวด](apps/web/src/pages/CategorizePage.tsx) (drag-and-drop *and* tap-to-select-then-tap-target categorizing, matching the original's dual desktop/mobile interaction), [สรุปค้าง](apps/web/src/pages/ClaimsPage.tsx) (grouped outstanding claims + loans with one-tap "ได้รับคืนแล้ว"), [สรุป](apps/web/src/pages/ReportsPage.tsx) (unchanged from Phase 4). Settings (accounts/cards/debts/categories/budgets/recurring/notifications/locale/trash) moved behind the header's gear icon as a full-screen overlay, matching the original's single settings tab rather than being spread across the top-level nav.
+- **New backend needed for this**: the original's settings screens (manage cash accounts, credit cards, debts, expense categories) had no backend counterpart yet — added [accountService.ts](apps/api/src/services/accountService.ts), [debtService.ts](apps/api/src/services/debtService.ts), and [categoryService.ts](apps/api/src/services/categoryService.ts) with full CRUD, plus `PATCH /api/transactions/:id/category` and `POST /api/transactions/:id/claim-received` so the categorize/claims screens have something real to call.
+- **Claims model**: the original tracked "pending reimbursement" two ways — a full `pending_claim` record with a 4-stage status, or a `personal_expense` filed under a category that had a status label attached (e.g. tag an expense "หน้างานพังงา" and it's implicitly pending reimbursement). The new schema's `categories.is_claimable` + `default_claim_status` maps onto that second mechanic directly; [claimsSummaryService.ts](apps/api/src/services/claimsSummaryService.ts) groups both mechanics the same way the original's "สรุปค้าง" screen did. Marking either kind received credits the paying account back through the same ledger/undo/audit path as everything else — see the new integration test `claimsAndCategories.integration.test.ts`.
+- **A real, not cosmetic, improvement over the original**: "ชำระบัตรแล้ว" (pay off a credit card) in the original just reset the card's balance field to zero with no offsetting entry — money "disappeared." Paying a card down is naturally a `transfer` transaction (cash account → credit card account) in the new ledger, so it's now a real transaction with history, not a silent field reset.
+- **Kept from the Phase 1-4 build, not carried into this pass**: the search/filter bar (`searchTransactions`) has no dedicated UI right now — the original didn't have search either, so it wasn't part of the reference design. The backend endpoint is still there if you want it added to a screen later.
+
+## Real bugs found once a real database was available
+
+Every integration test in this repo self-skipped until embedded Postgres existed — this was the first time any of them actually ran. Two genuine bugs surfaced immediately, both the same root cause seen once already on the frontend (Phase 4's date-picker fix), now caught on the backend too:
+
+- **`DATE` columns silently shifted by a day**: `pg` parses SQL `DATE` into a JS `Date` in the *local* timezone by default; calling `.toISOString()` on that (as several mappers did) reprojects it through UTC and can flip the calendar day depending on the server's timezone offset. Fixed once, globally, in [pool.ts](apps/api/src/db/pool.ts) — `pg.types.setTypeParser(1082, v => v)` keeps every date column (`transaction_date`, `period_start`/`end`, due dates, `rate_date`, ...) as the literal `"YYYY-MM-DD"` string Postgres sends, never a `Date` object. This also means a few call sites (`budgetService.ts`, `debtService.ts`, `recurringService.ts`) that were doing `String(row.some_date).slice(0, 10)` — which only produces a correct result if the value is already a string — were quietly relying on this fix without knowing it.
+- **Thai text failed to insert until `initdb` was forced to UTF8**: on a Thai-locale Windows install, `initdb` infers the database encoding from the OS locale (`WIN1252` in this case) unless told otherwise — and `WIN1252` can't represent Thai text at all. Fixed in [embedded.ts](apps/api/src/db/embedded.ts) by always passing `--encoding=UTF8 --locale=C` to `initdb`, independent of the host OS's own locale.
+
+Also found and fixed once real usage in a browser was possible: [HomeDashboard.tsx](apps/web/src/pages/HomeDashboard.tsx)'s account balances (`useAccounts`/`useDebts`) were fetched once on mount and never re-fetched after a transaction changed them — the "available cash" figure went stale until a full page reload. Both hooks' `refresh()` are now included in the dashboard's own refresh cycle.
+
 ## ทดสอบ
 
 ```bash
@@ -95,13 +125,13 @@ npm run test -w packages/shared   # money math — pure, no DB
 npm run test -w apps/api          # ledger/notification/recurring-date math (pure) + Postgres integration suites (transactions, notifications, Phase 4)
 ```
 
-The integration suites (`apps/api/test/*.integration.test.ts`) need a real Postgres — they self-skip if `DATABASE_URL` isn't reachable, because `schema.sql`'s enums/triggers/GIN-trgm indexes aren't faithfully emulated by in-memory Postgres shims. Run `docker compose up -d && npm run migrate -w apps/api` first, then `npm run test -w apps/api`.
+The integration suites (`apps/api/test/*.integration.test.ts`) need a real Postgres — they self-skip if `DATABASE_URL` isn't reachable, because `schema.sql`'s enums/triggers/GIN-trgm indexes aren't faithfully emulated by in-memory Postgres shims. `npm run dev:api` once (to bring up the embedded Postgres and leave it running) is enough — then `DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54329/finance_tracker npm run test -w apps/api` runs all 40, no Docker required. Vitest runs test files sequentially for this package ([vitest.config.ts](apps/api/vitest.config.ts)) since the integration suites share one real database and the same seeded dev user rather than each getting an isolated sandbox.
 
 ## Pre-deploy checklist
 
-- [ ] `docker compose up -d && npm run migrate -w apps/api` runs clean against a fresh DB
-- [ ] `npm run test -w packages/shared` and `npm run test -w apps/api` (with `DATABASE_URL` set) both green
 - [ ] `npm run typecheck` passes for all three packages
+- [ ] `npm run test -w packages/shared` and `npm run test -w apps/api` (with `DATABASE_URL` set) both green
+- [ ] **Production must set `DATABASE_URL` explicitly** — the embedded-Postgres auto-start is a local-dev convenience only (`docker-compose.yml` is still the reference for that real instance)
 - [ ] A scheduler calls `npm run jobs:daily -w apps/api` once a day (trash purge, due recurring transactions, budget rollover, notification checks, Monday digest)
 - [ ] `idempotency_keys` / `undo_commands` cleanup job for rows past `expires_at` (schema defaults: 24h / 7d)
 - [ ] Replace the `x-user-id` dev stub with real auth before any non-local deployment
