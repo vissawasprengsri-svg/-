@@ -45,20 +45,23 @@ export interface CreateAccountInput {
   name: string;
   kind: AccountWithCard['kind'];
   currencyCode: string;
+  openingBalanceMajor?: string;
   creditLimitMajor?: string;
   dueDay?: number | null;
   statementDay?: number | null;
 }
 
 export async function createAccount(client: DbClient, userId: string, input: CreateAccountInput): Promise<AccountWithCard> {
+  const minorUnit = await getCurrencyMinorUnit(client, input.currencyCode);
+  const openingMinor = input.openingBalanceMajor ? fromMajorInput(input.openingBalanceMajor, minorUnit) : '0';
   const res = await client.query(
-    `INSERT INTO accounts (user_id, name, kind, currency_code) VALUES ($1,$2,$3,$4) RETURNING id`,
-    [userId, input.name, input.kind, input.currencyCode]
+    `INSERT INTO accounts (user_id, name, kind, currency_code, opening_balance, current_balance)
+     VALUES ($1,$2,$3,$4,$5,$5) RETURNING id`,
+    [userId, input.name, input.kind, input.currencyCode, openingMinor]
   );
   const accountId = res.rows[0].id;
 
   if (input.kind === 'credit_card') {
-    const minorUnit = await getCurrencyMinorUnit(client, input.currencyCode);
     const limitMinor = input.creditLimitMajor ? fromMajorInput(input.creditLimitMajor, minorUnit) : '0';
     await client.query(
       'INSERT INTO credit_cards (account_id, credit_limit, due_day, statement_day) VALUES ($1,$2,$3,$4)',
@@ -89,4 +92,35 @@ export async function updateCreditLimit(client: DbClient, userId: string, accoun
   const minorUnit = await getCurrencyMinorUnit(client, accountRes.rows[0]!.currency_code);
   const limitMinor = fromMajorInput(limitMajor, minorUnit);
   await client.query('UPDATE credit_cards SET credit_limit = $1 WHERE account_id = $2', [limitMinor, accountId]);
+}
+
+/**
+ * Directly overwrites a non-card account's running balance (e.g. entering
+ * a starting cash balance after the fact, or correcting drift). Mirrors
+ * `debtService.updateBalance` — a plain overwrite rather than an inserted
+ * transaction, since there's no ledger-affecting event to record here.
+ */
+export async function updateAccountBalance(client: DbClient, userId: string, accountId: string, balanceMajor: string): Promise<void> {
+  const accountRes = await client.query<{ currency_code: string; kind: string }>(
+    'SELECT currency_code, kind FROM accounts WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL',
+    [accountId, userId]
+  );
+  if (accountRes.rows.length === 0) throw Errors.notFound('account');
+  if (accountRes.rows[0]!.kind === 'credit_card') throw Errors.validation('use the credit limit field for credit card accounts');
+  const minorUnit = await getCurrencyMinorUnit(client, accountRes.rows[0]!.currency_code);
+  const balanceMinor = fromMajorInput(balanceMajor, minorUnit);
+  await client.query('UPDATE accounts SET current_balance = $1 WHERE id = $2', [balanceMinor, accountId]);
+}
+
+/**
+ * Persists a manual display order for a set of accounts (e.g. the cash/bank
+ * list and the credit-card list are reordered independently). Cross-group
+ * ordering doesn't matter: `listAccounts` sorts everything by `sort_order`
+ * once, and the UI splits the result by kind afterwards, so two accounts of
+ * different kinds sharing a sort_order value never causes a visible tie.
+ */
+export async function reorderAccounts(client: DbClient, userId: string, orderedIds: string[]): Promise<void> {
+  for (let i = 0; i < orderedIds.length; i++) {
+    await client.query('UPDATE accounts SET sort_order = $1 WHERE id = $2 AND user_id = $3', [i, orderedIds[i], userId]);
+  }
 }

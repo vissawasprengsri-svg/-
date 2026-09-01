@@ -324,6 +324,168 @@ export async function updateTransactionCategory(
 }
 
 /**
+ * Edits the amount, date, and/or description of an already-recorded
+ * transaction. The ledger only ever sees the transaction's own-currency
+ * `amount` (see ledger.ts — no currency conversion happens there), so a
+ * date/rate change never touches account balances; only a changed amount
+ * does, via the same reverse-then-apply pattern as delete+create.
+ *
+ * Changing the date is treated as "this actually happened on a different
+ * day", not a correction to an already-booked fact — so unlike a later
+ * correction to `exchange_rates` (which never retroactively changes a
+ * booked transaction), moving the date DOES re-resolve the exchange rate
+ * for the new date and recompute `base_amount` from it.
+ */
+export async function updateTransactionDetails(
+  client: DbClient,
+  ctx: Ctx,
+  transactionId: string,
+  input: { amountMajor?: string; description?: string; transactionDate?: string }
+): Promise<Transaction> {
+  const beforeRes = await client.query(
+    'SELECT * FROM transactions WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE',
+    [transactionId, ctx.userId]
+  );
+  const before = beforeRes.rows[0];
+  if (!before) throw Errors.notFound('transaction');
+
+  const minorUnit = await getCurrencyMinorUnit(client, before.currency_code);
+  let amountMinor = String(before.amount);
+  let exchangeRate = String(before.exchange_rate);
+  let transactionDate = String(before.transaction_date).slice(0, 10);
+
+  if (input.amountMajor !== undefined) {
+    amountMinor = fromMajorInput(input.amountMajor, minorUnit);
+  }
+
+  if (input.transactionDate !== undefined && input.transactionDate !== transactionDate) {
+    transactionDate = input.transactionDate;
+    const resolved = await resolveExchangeRate(client, {
+      fromCode: before.currency_code,
+      toCode: before.base_currency_code,
+      date: transactionDate,
+    });
+    exchangeRate = resolved.rate;
+  }
+
+  let baseAmountMinor = String(before.base_amount);
+  if (amountMinor !== String(before.amount) || exchangeRate !== String(before.exchange_rate)) {
+    const baseMinorUnit = await getCurrencyMinorUnit(client, before.base_currency_code);
+    baseAmountMinor = convertAmount(amountMinor, minorUnit, baseMinorUnit, exchangeRate);
+  }
+
+  let ledgerSnapshots: RowSnapshot[] = [];
+  if (amountMinor !== String(before.amount)) {
+    const txShape = {
+      type: before.type,
+      accountId: before.account_id,
+      toAccountId: before.to_account_id,
+      debtId: before.debt_id,
+      direction: before.direction,
+    };
+    const reverseSnapshots = await applyLedgerEffects(
+      client,
+      computeLedgerEffects({ ...txShape, amount: String(before.amount) }),
+      -1
+    );
+    const applySnapshots = await applyLedgerEffects(client, computeLedgerEffects({ ...txShape, amount: amountMinor }), 1);
+    ledgerSnapshots = [...reverseSnapshots, ...applySnapshots];
+  }
+
+  const afterRes = await client.query(
+    `UPDATE transactions SET amount = $1, base_amount = $2, exchange_rate = $3, transaction_date = $4, description = $5 WHERE id = $6 RETURNING *`,
+    [
+      amountMinor,
+      baseAmountMinor,
+      exchangeRate,
+      transactionDate,
+      input.description !== undefined ? input.description : before.description,
+      transactionId,
+    ]
+  );
+  const after = afterRes.rows[0];
+
+  const txSnapshot: RowSnapshot = { table: 'transactions', id: transactionId, before, after };
+  await recordCommand(client, { ...ctx, commandType: 'UPDATE_TRANSACTION_DETAILS' }, [txSnapshot, ...ledgerSnapshots]);
+  await recordAudit(client, {
+    userId: ctx.userId,
+    entityType: 'transaction',
+    entityId: transactionId,
+    action: 'update',
+    before,
+    after,
+    actorId: ctx.userId,
+  });
+
+  const withCategory = await client.query(`${WITH_CATEGORY_SELECT} WHERE t.id = $1`, [transactionId]);
+  return mapTransactionRow(withCategory.rows[0]);
+}
+
+/**
+ * Changes which account a transaction is booked against (the "source of
+ * funds"). Reverses the ledger effect against the old account and applies
+ * it against the new one, same reverse-then-apply pattern as an amount
+ * edit. Only touches `account_id` — `to_account_id`/`debt_id` (transfers,
+ * debt payments) are left alone, since this is for the single-account
+ * types (income, personal_expense, pending_claim, investment, loan_given).
+ */
+export async function updateTransactionAccount(
+  client: DbClient,
+  ctx: Ctx,
+  transactionId: string,
+  accountId: string | null
+): Promise<Transaction> {
+  const beforeRes = await client.query(
+    'SELECT * FROM transactions WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE',
+    [transactionId, ctx.userId]
+  );
+  const before = beforeRes.rows[0];
+  if (!before) throw Errors.notFound('transaction');
+
+  if (accountId === before.account_id) {
+    const withCategory = await client.query(`${WITH_CATEGORY_SELECT} WHERE t.id = $1`, [transactionId]);
+    return mapTransactionRow(withCategory.rows[0]);
+  }
+
+  if (accountId) {
+    const accountCheck = await client.query('SELECT id FROM accounts WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [
+      accountId,
+      ctx.userId,
+    ]);
+    if (accountCheck.rows.length === 0) throw Errors.notFound('account');
+  }
+
+  const txShape = {
+    type: before.type,
+    amount: String(before.amount),
+    toAccountId: before.to_account_id,
+    debtId: before.debt_id,
+    direction: before.direction,
+  };
+  const reverseSnapshots = await applyLedgerEffects(client, computeLedgerEffects({ ...txShape, accountId: before.account_id }), -1);
+  const applySnapshots = await applyLedgerEffects(client, computeLedgerEffects({ ...txShape, accountId }), 1);
+  const ledgerSnapshots = [...reverseSnapshots, ...applySnapshots];
+
+  const afterRes = await client.query('UPDATE transactions SET account_id = $1 WHERE id = $2 RETURNING *', [accountId, transactionId]);
+  const after = afterRes.rows[0];
+
+  const txSnapshot: RowSnapshot = { table: 'transactions', id: transactionId, before, after };
+  await recordCommand(client, { ...ctx, commandType: 'UPDATE_TRANSACTION_ACCOUNT' }, [txSnapshot, ...ledgerSnapshots]);
+  await recordAudit(client, {
+    userId: ctx.userId,
+    entityType: 'transaction',
+    entityId: transactionId,
+    action: 'update',
+    before,
+    after,
+    actorId: ctx.userId,
+  });
+
+  const withCategory = await client.query(`${WITH_CATEGORY_SELECT} WHERE t.id = $1`, [transactionId]);
+  return mapTransactionRow(withCategory.rows[0]);
+}
+
+/**
  * Toggles the reimbursement flag for either a folder-categorized expense (a
  * personal_expense filed under a claimable category) or a loan_given being
  * repaid — both use the same `claim_received` column. Reaching

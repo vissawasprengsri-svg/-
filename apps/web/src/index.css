@@ -105,6 +105,20 @@ h2 { font-size: 14px; font-weight: 600; margin: 4px 0 0; color: var(--ink); }
 .row-info { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .desc { font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { font-size: 11px; color: var(--muted); }
+.meta-input {
+  font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right;
+  border: none; border-bottom: 1px solid transparent; background: none; padding: 2px 0; width: 74px;
+  font-family: inherit; color: var(--ink);
+}
+.meta-input:focus { outline: none; border-bottom-color: var(--border); }
+
+.drag-handle { color: var(--muted); cursor: grab; touch-action: none; flex-shrink: 0; display: flex; }
+.dragging { opacity: 0.55; }
+.total-row {
+  display: flex; align-items: center; justify-content: space-between; background: #f2f0e6;
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-weight: 600; margin-bottom: 8px;
+}
+.total-row .amt { font-size: 15px; }
 .amt { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .amt.income { color: var(--accent); }
 .amt.expense { color: var(--danger); }
@@ -175,6 +189,28 @@ input, select {
 
 /* ---------- Categorize ---------- */
 .categorize-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.add-fab {
+  background: var(--accent); color: #fff; border: none; border-radius: 999px; width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;
+}
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(20, 18, 12, 0.45); z-index: 60;
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.modal-card {
+  background: var(--card); border-radius: 14px; padding: 20px; width: 100%; max-width: 360px;
+  display: flex; flex-direction: column; gap: 14px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+}
+.modal-card h3 { margin: 0; font-size: 15px; }
+.modal-card > input { width: 100%; }
+.status-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.status-option { padding: 7px 12px; border-radius: 999px; border: 1px solid var(--border); background: #fff; font-size: 12.5px; cursor: pointer; }
+.status-option.active { border-color: var(--accent); color: var(--accent); font-weight: 600; background: #f0f7f3; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.modal-actions button { padding: 8px 14px; border-radius: 8px; border: none; font-size: 13px; cursor: pointer; }
+.modal-actions .primary-btn { background: var(--accent); color: #fff; }
+.modal-actions .secondary-btn { background: none; color: var(--muted); border: 1px solid var(--border); }
 .cat-pills { display: flex; gap: 8px; flex-wrap: wrap; }
 .cat-pill {
   padding: 8px 12px; border-radius: 999px; border: 1px solid var(--border); background: #fff; cursor: pointer; font-size: 12.5px;
@@ -184,10 +220,24 @@ input, select {
 .cat-pill.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .cat-pill.unsorted { background: #f2ede0; }
 .pill-status { font-style: normal; font-size: 11px; }
+.pill-icon-btn {
+  background: none; border: none; color: var(--muted); cursor: pointer; padding: 2px; margin-left: 2px;
+  display: flex; align-items: center; border-radius: 4px; flex-shrink: 0;
+}
+.pill-icon-btn:hover { background: #eee9db; color: var(--ink); }
+.cat-pill-editing { background: #fff; gap: 4px; padding: 4px 6px; }
+.cat-pill-input { border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; font-size: 12.5px; font-family: inherit; width: 120px; }
+.edit-row { flex-wrap: wrap; }
+.edit-row .rename-input { flex: 1; min-width: 100px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font-size: 13px; }
+.queue-item-editing { flex-wrap: wrap; cursor: default; }
+.queue-item-editing .rename-input { border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; font-size: 12px; min-width: 90px; }
 
 .cat-detail { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-.cat-detail-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.cat-detail-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; flex-wrap: wrap; gap: 8px; }
 .cat-detail-head button { background: none; border: none; color: var(--muted); cursor: pointer; display: flex; align-items: center; gap: 4px; font-size: 12px; }
+.cat-detail-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.cat-detail-actions .confirm-text { color: var(--danger); font-size: 11.5px; max-width: 220px; }
+.cat-detail-actions .danger-btn { color: var(--danger) !important; font-weight: 600; }
 
 .row.draggable { cursor: grab; }
 .row select { max-width: 140px; }

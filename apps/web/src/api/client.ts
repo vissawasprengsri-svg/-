@@ -153,6 +153,10 @@ export const api = {
   listUnsortedExpenses: () => request<{ transactions: Transaction[] }>('GET', '/transactions/unsorted'),
   setTransactionCategory: (id: string, categoryId: string | null) =>
     request<{ transaction: Transaction }>('PATCH', `/transactions/${id}/category`, { categoryId }),
+  updateTransactionDetails: (id: string, patch: { amountMajor?: string; description?: string; transactionDate?: string }) =>
+    request<{ transaction: Transaction }>('PATCH', `/transactions/${id}/details`, patch),
+  updateTransactionAccount: (id: string, accountId: string | null) =>
+    request<{ transaction: Transaction }>('PATCH', `/transactions/${id}/account`, { accountId }),
   setClaimReceived: (id: string, received: boolean) =>
     request<{ transaction: Transaction }>('POST', `/transactions/${id}/claim-received`, { received }),
 
@@ -163,6 +167,7 @@ export const api = {
     name: string;
     kind: AccountWithCard['kind'];
     currencyCode: string;
+    openingBalanceMajor?: string;
     creditLimitMajor?: string;
     dueDay?: number | null;
     statementDay?: number | null;
@@ -170,6 +175,9 @@ export const api = {
   archiveAccount: (id: string) => request<void>('DELETE', `/accounts/${id}`),
   updateCreditLimit: (id: string, creditLimitMajor: string) =>
     request<{ ok: true }>('PATCH', `/accounts/${id}/credit-limit`, { creditLimitMajor }),
+  updateAccountBalance: (id: string, balanceMajor: string) =>
+    request<{ ok: true }>('PATCH', `/accounts/${id}/balance`, { balanceMajor }),
+  reorderAccounts: (orderedIds: string[]) => request<{ ok: true }>('PATCH', '/accounts/reorder', { orderedIds }),
 
   listDebts: () => request<{ debts: Debt[] }>('GET', '/debts'),
   createDebt: (input: { name: string; currencyCode: string; balanceMajor: string; isReceivable?: boolean }) =>
@@ -182,6 +190,7 @@ export const api = {
   createCategory: (input: { name: string; appliesTo: TransactionType[]; isClaimable?: boolean; defaultClaimStatus?: ClaimStatus | null }) =>
     request<{ category: Category }>('POST', '/categories', input),
   renameCategory: (id: string, name: string) => request<{ category: Category }>('PATCH', `/categories/${id}`, { name }),
+  reorderCategories: (orderedIds: string[]) => request<{ ok: true }>('PATCH', '/categories/reorder', { orderedIds }),
   updateCategoryClaimSettings: (id: string, patch: { isClaimable: boolean; defaultClaimStatus: ClaimStatus | null }) =>
     request<{ category: Category }>('PATCH', `/categories/${id}/claim-settings`, patch),
   deleteCategory: (id: string) => request<void>('DELETE', `/categories/${id}`),

@@ -11,7 +11,9 @@ import {
   softDeleteTransaction,
   updateClaimReceived,
   updateClaimStatus,
+  updateTransactionAccount,
   updateTransactionCategory,
+  updateTransactionDetails,
 } from '../services/transactionService.js';
 import { searchTransactions } from '../services/searchService.js';
 import { Errors } from '../domain/errors.js';
@@ -121,6 +123,36 @@ transactionsRouter.patch(
     const { categoryId } = categorySchema.parse(req.body);
     const transaction = await withTransaction((client) =>
       updateTransactionCategory(client, { userId: req.userId, sessionId: req.sessionId }, req.params.id!, categoryId)
+    );
+    res.json({ transaction });
+  })
+);
+
+const detailsSchema = z.object({
+  amountMajor: z.string().min(1).optional(),
+  description: z.string().optional(),
+  transactionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+
+transactionsRouter.patch(
+  '/:id/details',
+  asyncHandler(async (req, res) => {
+    const input = detailsSchema.parse(req.body);
+    const transaction = await withTransaction((client) =>
+      updateTransactionDetails(client, { userId: req.userId, sessionId: req.sessionId }, req.params.id!, input)
+    );
+    res.json({ transaction });
+  })
+);
+
+const accountSchema = z.object({ accountId: z.string().uuid().nullable() });
+
+transactionsRouter.patch(
+  '/:id/account',
+  asyncHandler(async (req, res) => {
+    const { accountId } = accountSchema.parse(req.body);
+    const transaction = await withTransaction((client) =>
+      updateTransactionAccount(client, { userId: req.userId, sessionId: req.sessionId }, req.params.id!, accountId)
     );
     res.json({ transaction });
   })

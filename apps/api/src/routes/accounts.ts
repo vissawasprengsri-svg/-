@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
-import { archiveAccount, createAccount, listAccounts, updateCreditLimit } from '../services/accountService.js';
+import { archiveAccount, createAccount, listAccounts, reorderAccounts, updateAccountBalance, updateCreditLimit } from '../services/accountService.js';
 
 export const accountsRouter = Router();
 
@@ -18,6 +18,7 @@ const createSchema = z.object({
   name: z.string().min(1),
   kind: z.enum(['cash', 'bank', 'ewallet', 'credit_card']),
   currencyCode: z.string().length(3),
+  openingBalanceMajor: z.string().optional(),
   creditLimitMajor: z.string().optional(),
   dueDay: z.number().int().min(1).max(31).optional().nullable(),
   statementDay: z.number().int().min(1).max(31).optional().nullable(),
@@ -47,6 +48,28 @@ accountsRouter.patch(
   asyncHandler(async (req, res) => {
     const { creditLimitMajor } = limitSchema.parse(req.body);
     await withTransaction((client) => updateCreditLimit(client, req.userId, req.params.id!, creditLimitMajor));
+    res.json({ ok: true });
+  })
+);
+
+const balanceSchema = z.object({ balanceMajor: z.string().min(1) });
+
+accountsRouter.patch(
+  '/:id/balance',
+  asyncHandler(async (req, res) => {
+    const { balanceMajor } = balanceSchema.parse(req.body);
+    await withTransaction((client) => updateAccountBalance(client, req.userId, req.params.id!, balanceMajor));
+    res.json({ ok: true });
+  })
+);
+
+const reorderSchema = z.object({ orderedIds: z.array(z.string().uuid()).min(1) });
+
+accountsRouter.patch(
+  '/reorder',
+  asyncHandler(async (req, res) => {
+    const { orderedIds } = reorderSchema.parse(req.body);
+    await withTransaction((client) => reorderAccounts(client, req.userId, orderedIds));
     res.json({ ok: true });
   })
 );

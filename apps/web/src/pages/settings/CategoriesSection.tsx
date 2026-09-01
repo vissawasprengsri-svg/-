@@ -3,6 +3,7 @@ import { Trash2 } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
 import { useI18n } from '../../i18n/I18nContext';
 import { useCategories } from '../../hooks/useCategories';
+import { ReorderableList } from '../../components/ReorderableList';
 
 export function CategoriesSection({ onError }: { onError: (message: string) => void }) {
   const { t } = useI18n();
@@ -49,6 +50,15 @@ export function CategoriesSection({ onError }: { onError: (message: string) => v
     }
   }
 
+  async function reorder(orderedIds: string[]) {
+    try {
+      await api.reorderCategories(orderedIds);
+      await refresh();
+    } catch (err) {
+      if (err instanceof ApiError) onError(err.message);
+    }
+  }
+
   return (
     <section className="form-card">
       <h2>{t('settings.sections.categories')}</h2>
@@ -66,9 +76,14 @@ export function CategoriesSection({ onError }: { onError: (message: string) => v
         </button>
       </div>
       {categories.length === 0 && <p className="empty-sm">—</p>}
-      <ul className="list">
-        {categories.map((c) => (
-          <li key={c.id} className="category-row">
+      <ReorderableList
+        items={categories}
+        className="list"
+        itemClassName="category-row"
+        onReorder={reorder}
+        renderItem={(c, dragHandle) => (
+          <>
+            {dragHandle}
             <input
               className="rename-input"
               defaultValue={c.name}
@@ -82,9 +97,9 @@ export function CategoriesSection({ onError }: { onError: (message: string) => v
             <button className="icon-btn" onClick={() => remove(c.id)}>
               <Trash2 size={14} />
             </button>
-          </li>
-        ))}
-      </ul>
+          </>
+        )}
+      />
     </section>
   );
 }

@@ -76,10 +76,22 @@ export async function updateCategoryClaimSettings(
   return mapRow(res.rows[0]);
 }
 
+export async function reorderCategories(client: DbClient, userId: string, orderedIds: string[]): Promise<void> {
+  for (let i = 0; i < orderedIds.length; i++) {
+    await client.query('UPDATE categories SET sort_order = $1 WHERE id = $2 AND user_id = $3', [i, orderedIds[i], userId]);
+  }
+}
+
+/**
+ * Deleting a category leaves any transactions filed under it pointing at a
+ * category_id that no longer resolves to anything visible — so they're
+ * unassigned back to uncategorized rather than left orphaned/hidden.
+ */
 export async function deleteCategory(client: DbClient, userId: string, id: string): Promise<void> {
   const res = await client.query(
     'UPDATE categories SET deleted_at = now() WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL AND is_system = FALSE',
     [id, userId]
   );
   if (res.rowCount === 0) throw Errors.notFound('category');
+  await client.query('UPDATE transactions SET category_id = NULL WHERE category_id = $1 AND user_id = $2', [id, userId]);
 }

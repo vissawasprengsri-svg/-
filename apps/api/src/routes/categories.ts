@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
-import { createCategory, deleteCategory, listCategories, renameCategory, updateCategoryClaimSettings } from '../services/categoryService.js';
+import { createCategory, deleteCategory, listCategories, renameCategory, reorderCategories, updateCategoryClaimSettings } from '../services/categoryService.js';
 
 export const categoriesRouter = Router();
 
@@ -31,6 +31,19 @@ categoriesRouter.post(
     const input = createSchema.parse(req.body);
     const category = await withTransaction((client) => createCategory(client, req.userId, input));
     res.status(201).json({ category });
+  })
+);
+
+const reorderSchema = z.object({ orderedIds: z.array(z.string().uuid()).min(1) });
+
+// Must be registered before the `/:id` routes below, or Express would match
+// the literal path "reorder" as an :id.
+categoriesRouter.patch(
+  '/reorder',
+  asyncHandler(async (req, res) => {
+    const { orderedIds } = reorderSchema.parse(req.body);
+    await withTransaction((client) => reorderCategories(client, req.userId, orderedIds));
+    res.json({ ok: true });
   })
 );
 
