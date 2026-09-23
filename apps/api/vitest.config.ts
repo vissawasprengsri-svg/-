@@ -9,5 +9,8 @@ export default defineConfig({
     // suite's before/after state deterministic; the pure unit test files
     // are fast enough that this costs nothing noticeable.
     fileParallelism: false,
+    // Runs before the suites import ../src/db/pool.js, which reads
+    // DATABASE_URL once at module load — see test/setup.ts.
+    setupFiles: ['./test/setup.ts'],
   },
 });

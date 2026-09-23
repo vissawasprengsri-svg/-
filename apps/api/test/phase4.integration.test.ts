@@ -158,11 +158,13 @@ describe.skipIf(!reachable)('Phase 4 (real Postgres): budgets, recurring, search
       )
     );
 
+    // searchTransactions returns a cursor page ({ transactions, nextCursor }),
+    // not a bare array.
     const results = await withTransaction((client) => searchTransactions(client, USER_ID, { q: uniqueWord }));
-    expect(results.some((t) => t.description === uniqueWord)).toBe(true);
+    expect(results.transactions.some((t) => t.description === uniqueWord)).toBe(true);
 
     const noMatch = await withTransaction((client) => searchTransactions(client, USER_ID, { q: 'คำที่ไม่มีทางเจอแน่นอน' }));
-    expect(noMatch.some((t) => t.description === uniqueWord)).toBe(false);
+    expect(noMatch.transactions.some((t) => t.description === uniqueWord)).toBe(false);
   });
 
   it('monthly summary and trend include a freshly created transaction', async () => {

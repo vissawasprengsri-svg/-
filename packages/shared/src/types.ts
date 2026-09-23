@@ -79,7 +79,8 @@ export interface Category {
   appliesTo: TransactionType[];
   defaultClaimStatus: ClaimStatus | null;
   isClaimable: boolean;
-  icon: string | null;
+  /** Free-text override for the status pill shown wherever this category's claim status appears, e.g. "รอรวมยอด". Falls back to defaultClaimStatus's fixed label when unset. */
+  statusLabel: string | null;
   color: string | null;
   sortOrder: number;
   isSystem: boolean;
@@ -121,6 +122,9 @@ export interface Transaction {
   claimDueDate: string | null;
   claimedAt: string | null;
   receivedAt: string | null;
+  claimReceivedAccountId: string | null;
+  /** Denormalized, joined at read-time for display — not a stored column. */
+  claimReceivedAccountName: string | null;
 
   direction: InvestmentDirection | null;
 
@@ -157,6 +161,7 @@ export interface CreateTransactionInput {
   note?: string;
   merchant?: string;
   transactionDate: string; // YYYY-MM-DD
+  occurredAt?: string | null; // full ISO instant, for recording time-of-day
   categoryId?: string | null;
   accountId?: string | null;
   toAccountId?: string | null;
@@ -167,10 +172,35 @@ export interface CreateTransactionInput {
   clientId: string; // client-generated UUID, used for idempotent dedupe
 }
 
+export interface UpcomingBill {
+  id: string;
+  userId: string;
+  title: string;
+  amount: MoneyMinor;
+  currencyCode: string;
+  dueDate: string; // YYYY-MM-DD
+  note: string | null;
+  isPaid: boolean;
+  paidAt: string | null;
+  transactionId: string | null;
+  createdAt: string;
+  deletedAt: string | null;
+}
+
+/** Input payload for jotting down a new upcoming bill. */
+export interface CreateUpcomingBillInput {
+  title: string;
+  amountMajor: string; // decimal string in major units, e.g. "150.50"
+  currencyCode?: string;
+  dueDate: string; // YYYY-MM-DD
+  note?: string | null;
+}
+
 export interface ClaimGroup {
   categoryId: string | null;
   categoryName: string;
   defaultClaimStatus: ClaimStatus | null;
+  statusLabel: string | null;
   total: MoneyMinor;
   items: Transaction[];
 }
@@ -179,7 +209,8 @@ export interface ClaimsSummary {
   totalOutstanding: MoneyMinor;
   folderGroups: ClaimGroup[]; // personal_expense filed under a claimable category
   claimGroups: ClaimGroup[]; // full pending_claim records
-  loans: Transaction[]; // loan_given not yet repaid
+  loanGroups: ClaimGroup[]; // loan_given not yet repaid, grouped by category like the others
+  completedGroups: ClaimGroup[]; // personal_expense/loan_given already received, most recent first
 }
 
 export interface Budget {
@@ -208,6 +239,7 @@ export interface RecurringTemplate {
   amountMajor: string;
   currencyCode: string;
   description?: string;
+  note?: string;
   categoryId?: string | null;
   accountId?: string | null;
 }
@@ -227,6 +259,7 @@ export interface RecurringRule {
   nextRunDate: string | null;
   lastRunAt: string | null;
   autoCreate: boolean;
+  notifyLeadDays: number;
   isActive: boolean;
   createdAt: string;
   deletedAt: string | null;
@@ -252,6 +285,32 @@ export interface TrendPoint {
   expense: MoneyMinor;
 }
 
+/**
+ * A set of pending_claim transactions submitted for reimbursement together.
+ *
+ * `status` is the stored `claim_status` enum, reused here: 'claimed' means the
+ * batch has been handed in, 'received' that it was paid back in full. Partial
+ * payment has no enum value of its own, so `settlement` is derived at read time
+ * from how many of the batch's own items have been marked received — that can't
+ * drift out of sync with the items the way a stored flag would.
+ */
+export interface ClaimBatch {
+  id: string;
+  referenceNo: string | null;
+  title: string;
+  status: ClaimStatus;
+  settlement: 'submitted' | 'partially_paid' | 'paid';
+  totalAmount: MoneyMinor;
+  receivedAmount: MoneyMinor;
+  currencyCode: string;
+  itemCount: number;
+  receivedCount: number;
+  submittedAt: string | null;
+  receivedAt: string | null;
+  createdAt: string;
+  items: Transaction[];
+}
+
 export interface TransactionSearchFilters {
   q?: string;
   dateFrom?: string;
@@ -259,8 +318,22 @@ export interface TransactionSearchFilters {
   categoryId?: string;
   type?: TransactionType;
   status?: ClaimStatus;
+  /** Hides rows already reimbursed (claim_received = true, or pending_claim status = 'received') —
+   * for the "active work" views (CategorizePage) where a received item is done and archived, not
+   * for historical/reporting views that need the full picture regardless of receive status. */
+  excludeReceived?: boolean;
   amountMinMajor?: string;
   amountMaxMajor?: string;
+  /** Page size; server clamps to a sane max. Omit for the server's default. */
+  limit?: number;
+  /** Opaque value from a previous page's `nextCursor` — fetches the page after it. */
+  cursor?: string;
+}
+
+/** Keyset-paginated transaction list: `nextCursor` is null once there's nothing more to fetch. */
+export interface TransactionPage {
+  transactions: Transaction[];
+  nextCursor: string | null;
 }
 
 export const CLAIM_STATUS_ORDER: ClaimStatus[] = ['awaiting_bill', 'pending', 'claimed', 'received'];
@@ -274,6 +347,8 @@ export const NOTIFICATION_RULE_CODES = [
   'CREDIT_CARD_NEAR_LIMIT',
   'LOAN_OVERDUE',
   'DAILY_LOG_REMINDER',
+  'RECURRING_DUE_SOON',
+  'BILL_DUE_SOON',
 ] as const;
 export type NotificationRuleCode = (typeof NOTIFICATION_RULE_CODES)[number];
 

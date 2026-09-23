@@ -111,6 +111,59 @@ describe.skipIf(!reachable)('transactionService (real Postgres, Phase 1 safety m
     expect(Number(res.rows[0].count)).toBe(1);
   });
 
+  it('re-creating with a clientId whose row was deleted is refused, not replayed as live', async () => {
+    const sessionId = randomUUID();
+    const clientId = randomUUID();
+    const input = {
+      type: 'personal_expense' as const,
+      amountMajor: '10.00',
+      currencyCode: 'THB',
+      transactionDate: '2026-01-15',
+      accountId: ACCOUNT_ID,
+      clientId,
+    };
+
+    const { transaction } = await withTransaction((client) =>
+      createTransaction(client, { userId: USER_ID, sessionId }, input)
+    );
+    await withTransaction((client) => softDeleteTransaction(client, { userId: USER_ID, sessionId }, transaction.id));
+
+    // Replaying the trashed row here would report "created" for something
+    // sitting in the bin, with its ledger effect already reversed.
+    await expect(
+      withTransaction((client) => createTransaction(client, { userId: USER_ID, sessionId }, input))
+    ).rejects.toMatchObject({ code: 'CLIENT_ID_REUSED_AFTER_DELETE' });
+
+    expect(await balanceOf(ACCOUNT_ID)).toBe('0');
+  });
+
+  it('a transaction naming an account that does not exist is refused by the account foreign key', async () => {
+    const sessionId = randomUUID();
+    const missingAccountId = randomUUID();
+
+    await expect(
+      withTransaction((client) =>
+        createTransaction(
+          client,
+          { userId: USER_ID, sessionId },
+          {
+            type: 'personal_expense',
+            amountMajor: '42.00',
+            currencyCode: 'THB',
+            transactionDate: '2026-01-15',
+            accountId: missingAccountId,
+            clientId: randomUUID(),
+          }
+        )
+      )
+    ).rejects.toThrow();
+
+    const res = await pool.query('SELECT COUNT(*)::int AS n FROM transactions WHERE account_id = $1', [
+      missingAccountId,
+    ]);
+    expect(res.rows[0].n).toBe(0);
+  });
+
   it('Ctrl+Z / Ctrl+Shift+Z undo and redo a create through the generic command stack', async () => {
     const sessionId = randomUUID();
     const clientId = randomUUID();

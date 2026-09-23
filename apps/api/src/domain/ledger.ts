@@ -1,7 +1,8 @@
-import { add, negate, type MoneyMinor } from '@finance/shared';
+import { negate, type MoneyMinor } from '@finance/shared';
 import type { Transaction } from '@finance/shared';
 import type { DbClient } from '../db/pool.js';
-import type { RowSnapshot } from './commandStore.js';
+import type { DeltaSnapshot } from './commandStore.js';
+import { Errors } from './errors.js';
 
 interface LedgerEffect {
   kind: 'account' | 'debt';
@@ -47,30 +48,45 @@ export function computeLedgerEffects(tx: Pick<Transaction, 'type' | 'amount' | '
 }
 
 /**
- * Applies a list of ledger effects and returns the RowSnapshots needed to
+ * Applies a list of ledger effects and returns the DeltaSnapshots needed to
  * record them as part of an undoable command. `sign` lets callers apply
  * the effects forward (creating/restoring a transaction) or in reverse
  * (deleting one, or reversing a claim reimbursement).
+ *
+ * Balances are moved with a single `balance = balance + delta` statement
+ * rather than read-then-write: the addition happens inside the row lock
+ * Postgres takes for the UPDATE, and the recorded snapshot is the delta
+ * itself, so undo/redo re-applies it against whatever the balance has
+ * become instead of overwriting it with a stale absolute figure (see
+ * DeltaSnapshot in commandStore.ts).
  */
 export async function applyLedgerEffects(
   client: DbClient,
   effects: LedgerEffect[],
   sign: 1 | -1
-): Promise<RowSnapshot[]> {
-  const snapshots: RowSnapshot[] = [];
+): Promise<DeltaSnapshot[]> {
+  const snapshots: DeltaSnapshot[] = [];
   for (const effect of effects) {
     const table = effect.kind === 'account' ? 'accounts' : 'debts';
     const delta = sign === 1 ? effect.delta : negate(effect.delta);
-    const beforeRes = await client.query(`SELECT * FROM "${table}" WHERE id = $1 FOR UPDATE`, [effect.id]);
-    const before = beforeRes.rows[0];
-    if (!before) continue;
-    const balanceField = 'current_balance';
-    const newBalance = add(String(before[balanceField]), delta);
-    const afterRes = await client.query(`UPDATE "${table}" SET ${balanceField} = $1 WHERE id = $2 RETURNING *`, [
-      newBalance,
-      effect.id,
-    ]);
-    snapshots.push({ table, id: effect.id, before, after: afterRes.rows[0] });
+    const res = await client.query(
+      `UPDATE "${table}" SET current_balance = current_balance + $1::bigint WHERE id = $2`,
+      [delta, effect.id]
+    );
+    if (res.rowCount === 0) {
+      // Defence in depth, and deliberately not a silent `continue`: skipping
+      // would book the transaction while leaving the balance short by exactly
+      // its amount, with nothing recorded to trace the gap back to later.
+      //
+      // Nothing should reach this today — every id that gets here arrives on a
+      // column with a foreign key (account_id, to_account_id, debt_id,
+      // claim_received_account_id), and accounts/debts are only soft-deleted,
+      // so the row is still physically there and the UPDATE above matches it on
+      // id alone by design. It exists so that a future path without that
+      // protection fails loudly instead of quietly mis-stating a balance.
+      throw Errors.validation(`Cannot move balance: ${effect.kind} ${effect.id} does not exist`);
+    }
+    snapshots.push({ kind: 'delta', table, id: effect.id, column: 'current_balance', delta });
   }
   return snapshots;
 }

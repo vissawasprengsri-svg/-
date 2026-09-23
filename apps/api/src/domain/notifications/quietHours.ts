@@ -20,6 +20,11 @@ export function currentHHMMInTimezone(date: Date, timezone: string): string {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
+    // `hour12: false` alone doesn't pin the cycle to 0-23 — some ICU versions
+    // still render midnight as "24:00" under it, which breaks the plain
+    // string comparison in isWithinQuietHours (`"24:00" >= "22:00"` disagrees
+    // with `"00:00" >= "22:00"`). `hourCycle: 'h23'` forces 00-23 explicitly.
+    hourCycle: 'h23',
   });
   return formatter.format(date);
 }

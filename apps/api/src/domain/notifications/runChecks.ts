@@ -10,6 +10,8 @@ import {
   checkCreditCardNearLimit,
   checkDailyLogReminder,
   checkLoanOverdue,
+  checkRecurringDueSoon,
+  checkUpcomingBillsDue,
   type NotificationCandidate,
 } from './ruleEngine.js';
 
@@ -77,6 +79,8 @@ export async function runNotificationChecksForUser(
     ...(await checkCreditCardNearLimit(client, userId, settings.cardUsageAlertPct)),
     ...(await checkLoanOverdue(client, userId)),
     ...(await checkDailyLogReminder(client, userId, settings, now)),
+    ...(await checkRecurringDueSoon(client, userId)),
+    ...(await checkUpcomingBillsDue(client, userId, prefs.BILL_DUE_SOON.leadDays)),
   ];
 
   let created = 0;

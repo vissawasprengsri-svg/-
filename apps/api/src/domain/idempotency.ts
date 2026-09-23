@@ -7,8 +7,31 @@ export interface IdempotencyLookup {
   cachedBody?: unknown;
 }
 
+/**
+ * Serializes `value` with object keys sorted at every level, so two logically
+ * identical request bodies hash the same regardless of what order the client
+ * happened to put its keys in. Plain `JSON.stringify` preserves insertion
+ * order — a retry that reconstructs the same body from, say, a differently-
+ * ordered object literal would hash differently, be treated as a *different*
+ * request, and the idempotency check would wave a duplicate mutation through
+ * instead of catching it. Array order is left alone: it's meaningful data
+ * (e.g. `transactionIds`), not incidental key placement.
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  }
+  const entries = Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`);
+  return `{${entries.join(',')}}`;
+}
+
 function hashRequest(body: unknown): string {
-  return createHash('sha256').update(JSON.stringify(body ?? {})).digest('hex');
+  return createHash('sha256').update(stableStringify(body ?? {})).digest('hex');
 }
 
 /**

@@ -1,6 +1,7 @@
 import { fromMajorInput, type Transaction, type TransactionSearchFilters } from '@finance/shared';
 import type { DbClient } from '../db/pool.js';
 import { mapTransactionRow } from '../db/mappers.js';
+import { clampLimit, decodeCursor, paginateRows, type Page } from '../domain/pagination.js';
 
 /**
  * Full-text search (via the schema's own `search_vector`/GIN index) combined
@@ -9,7 +10,11 @@ import { mapTransactionRow } from '../db/mappers.js';
  * sensibly — "over ฿500" means the same thing regardless of what currency
  * any one transaction was booked in.
  */
-export async function searchTransactions(client: DbClient, userId: string, filters: TransactionSearchFilters): Promise<Transaction[]> {
+export async function searchTransactions(
+  client: DbClient,
+  userId: string,
+  filters: TransactionSearchFilters & { limit?: number; cursor?: string }
+): Promise<Page<Transaction>> {
   let amountMinMinor: string | null = null;
   let amountMaxMinor: string | null = null;
   if (filters.amountMinMajor || filters.amountMaxMajor) {
@@ -20,6 +25,9 @@ export async function searchTransactions(client: DbClient, userId: string, filte
     if (filters.amountMinMajor) amountMinMinor = fromMajorInput(filters.amountMinMajor, minorUnit);
     if (filters.amountMaxMajor) amountMaxMinor = fromMajorInput(filters.amountMaxMajor, minorUnit);
   }
+
+  const limit = clampLimit(filters.limit);
+  const cursor = filters.cursor ? decodeCursor(filters.cursor) : null;
 
   const res = await client.query(
     `SELECT t.*, c.name AS category_name, c.is_claimable AS category_is_claimable
@@ -34,8 +42,10 @@ export async function searchTransactions(client: DbClient, userId: string, filte
        AND ($7::claim_status IS NULL OR t.status = $7)
        AND ($8::bigint IS NULL OR t.base_amount >= $8)
        AND ($9::bigint IS NULL OR t.base_amount <= $9)
-     ORDER BY t.transaction_date DESC, t.created_at DESC
-     LIMIT 200`,
+       AND ($10::date IS NULL OR (t.transaction_date, t.created_at, t.id) < ($10::date, $11::timestamptz, $12::uuid))
+       AND (NOT $13 OR (t.claim_received = FALSE AND (t.status IS NULL OR t.status != 'received')))
+     ORDER BY t.transaction_date DESC, t.created_at DESC, t.id DESC
+     LIMIT $14`,
     [
       userId,
       filters.q ?? null,
@@ -46,7 +56,12 @@ export async function searchTransactions(client: DbClient, userId: string, filte
       filters.status ?? null,
       amountMinMinor,
       amountMaxMinor,
+      cursor?.date ?? null,
+      cursor?.createdAt ?? null,
+      cursor?.id ?? null,
+      filters.excludeReceived ?? false,
+      limit + 1,
     ]
   );
-  return res.rows.map(mapTransactionRow);
+  return paginateRows(res.rows, limit, mapTransactionRow);
 }

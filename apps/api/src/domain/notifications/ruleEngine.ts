@@ -82,6 +82,62 @@ export async function checkCreditCardDueSoon(
   return candidates;
 }
 
+export async function checkRecurringDueSoon(client: DbClient, userId: string): Promise<NotificationCandidate[]> {
+  const res = await client.query(
+    `SELECT id, template, next_run_date, notify_lead_days FROM recurring_rules
+     WHERE user_id = $1 AND is_active = TRUE AND deleted_at IS NULL AND next_run_date IS NOT NULL`,
+    [userId]
+  );
+  const today = new Date(new Date().toDateString());
+  const candidates: NotificationCandidate[] = [];
+  for (const row of res.rows) {
+    const dueDateStr = String(row.next_run_date).slice(0, 10);
+    const due = new Date(`${dueDateStr}T00:00:00`);
+    const days = daysBetween(today, due);
+    // Each rule carries its own lead time (notify_lead_days) rather than the
+    // global multi-threshold preference other rules use — a bill someone
+    // wants a single heads-up on doesn't need the [7,3,1] cadence.
+    if (days === Number(row.notify_lead_days)) {
+      const description = row.template?.description || '-';
+      candidates.push({
+        ruleCode: 'RECURRING_DUE_SOON',
+        severity: 'warning',
+        vars: { description, days: String(days) },
+        deepLink: '/settings',
+        entityType: 'recurring_rule',
+        entityId: row.id,
+        dedupeKey: `RECURRING_DUE_SOON:${row.id}:${dueDateStr}`,
+      });
+    }
+  }
+  return candidates;
+}
+
+export async function checkUpcomingBillsDue(client: DbClient, userId: string, leadDays: number[]): Promise<NotificationCandidate[]> {
+  const res = await client.query(
+    `SELECT id, title, due_date, (due_date - CURRENT_DATE) AS days_until
+     FROM upcoming_bills
+     WHERE user_id = $1 AND is_paid = FALSE AND deleted_at IS NULL`,
+    [userId]
+  );
+  const candidates: NotificationCandidate[] = [];
+  for (const row of res.rows) {
+    const days = Number(row.days_until);
+    if (leadDays.includes(days)) {
+      candidates.push({
+        ruleCode: 'BILL_DUE_SOON',
+        severity: 'warning',
+        vars: { title: row.title, days: String(days) },
+        deepLink: '/',
+        entityType: 'upcoming_bill',
+        entityId: row.id,
+        dedupeKey: `BILL_DUE_SOON:${row.id}:${String(row.due_date).slice(0, 10)}`,
+      });
+    }
+  }
+  return candidates;
+}
+
 export async function checkBudgetThreshold(client: DbClient, userId: string): Promise<NotificationCandidate[]> {
   const res = await client.query(
     `SELECT b.id, b.name, b.amount, b.period_start, b.alert_pcts,

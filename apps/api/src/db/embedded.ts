@@ -45,6 +45,11 @@ export function embeddedDatabaseUrl(): string {
   return `postgres://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PORT}/${DB_NAME}`;
 }
 
+/** Where backup.ts writes snapshot files by default — same cache root as the binaries/data. */
+export function defaultBackupDir(): string {
+  return join(CACHE_ROOT, 'backups');
+}
+
 async function canConnect(database = 'postgres'): Promise<boolean> {
   const client = new pg.Client({
     user: PG_USER,

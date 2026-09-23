@@ -11,7 +11,13 @@ function mapRow(row: Record<string, unknown>): Category {
     appliesTo: row.applies_to as TransactionType[],
     defaultClaimStatus: (row.default_claim_status as ClaimStatus | null) ?? null,
     isClaimable: Boolean(row.is_claimable),
-    icon: (row.icon as string | null) ?? null,
+    // `icon` is otherwise-unused in this fixed schema, so it's repurposed as
+    // a free-text status label the user can edit themselves (e.g. "รอรวมยอด")
+    // that overrides the fixed claim_status enum's display text everywhere
+    // the status pill is shown. default_claim_status still has to be set to
+    // some enum value to satisfy the table's CHECK constraint, but nothing
+    // branches on which one — it's `statusLabel` that's actually shown.
+    statusLabel: (row.icon as string | null) ?? null,
     color: (row.color as string | null) ?? null,
     sortOrder: Number(row.sort_order),
     isSystem: Boolean(row.is_system),
@@ -34,18 +40,37 @@ export async function listCategories(client: DbClient, userId: string, appliesTo
 export interface CreateCategoryInput {
   name: string;
   appliesTo: TransactionType[];
-  isClaimable?: boolean;
-  defaultClaimStatus?: ClaimStatus | null;
+  statusLabel?: string | null;
+  color?: string | null;
+}
+
+// The enum itself drives no behavior (see mapRow) — 'pending' is just a
+// placeholder that satisfies the is_claimable/default_claim_status CHECK
+// constraint whenever a category has a custom status label.
+const PLACEHOLDER_CLAIM_STATUS: ClaimStatus = 'pending';
+
+// A fixed, readable-on-both-themes palette for auto-assigned category badges —
+// picked by a stable hash of the name (not a running count), so a category's
+// color never shifts just because an earlier one was deleted or renamed.
+const CATEGORY_PALETTE = [
+  '#E2691B', '#3E6B4C', '#1B4965', '#8E44AD', '#A23A2E', '#B8860B', '#2F6690', '#6B4C9A', '#C1594B', '#3D8168',
+];
+
+function colorForName(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  }
+  return CATEGORY_PALETTE[Math.abs(hash) % CATEGORY_PALETTE.length]!;
 }
 
 export async function createCategory(client: DbClient, userId: string, input: CreateCategoryInput): Promise<Category> {
-  if (input.isClaimable && !input.defaultClaimStatus) {
-    throw Errors.validation('A claimable category needs a defaultClaimStatus');
-  }
+  const statusLabel = input.statusLabel?.trim() || null;
+  const color = input.color?.trim() || colorForName(input.name);
   const res = await client.query(
-    `INSERT INTO categories (user_id, name, applies_to, is_claimable, default_claim_status)
-     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [userId, input.name, input.appliesTo, input.isClaimable ?? false, input.defaultClaimStatus ?? null]
+    `INSERT INTO categories (user_id, name, applies_to, is_claimable, default_claim_status, icon, color)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [userId, input.name, input.appliesTo, statusLabel !== null, statusLabel !== null ? PLACEHOLDER_CLAIM_STATUS : null, statusLabel, color]
   );
   return mapRow(res.rows[0]);
 }
@@ -59,18 +84,12 @@ export async function renameCategory(client: DbClient, userId: string, id: strin
   return mapRow(res.rows[0]);
 }
 
-export async function updateCategoryClaimSettings(
-  client: DbClient,
-  userId: string,
-  id: string,
-  patch: { isClaimable: boolean; defaultClaimStatus: ClaimStatus | null }
-): Promise<Category> {
-  if (patch.isClaimable && !patch.defaultClaimStatus) {
-    throw Errors.validation('A claimable category needs a defaultClaimStatus');
-  }
+export async function updateCategoryStatusLabel(client: DbClient, userId: string, id: string, statusLabelInput: string | null): Promise<Category> {
+  const statusLabel = statusLabelInput?.trim() || null;
   const res = await client.query(
-    'UPDATE categories SET is_claimable = $1, default_claim_status = $2 WHERE id = $3 AND user_id = $4 AND deleted_at IS NULL RETURNING *',
-    [patch.isClaimable, patch.isClaimable ? patch.defaultClaimStatus : null, id, userId]
+    `UPDATE categories SET is_claimable = $1, default_claim_status = $2, icon = $3
+     WHERE id = $4 AND user_id = $5 AND deleted_at IS NULL RETURNING *`,
+    [statusLabel !== null, statusLabel !== null ? PLACEHOLDER_CLAIM_STATUS : null, statusLabel, id, userId]
   );
   if (res.rows.length === 0) throw Errors.notFound('category');
   return mapRow(res.rows[0]);

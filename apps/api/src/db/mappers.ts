@@ -36,6 +36,8 @@ export function mapTransactionRow(row: Record<string, unknown>): Transaction {
     claimDueDate: iso(row.claim_due_date),
     claimedAt: iso(row.claimed_at),
     receivedAt: iso(row.received_at),
+    claimReceivedAccountId: (row.claim_received_account_id as string | null) ?? null,
+    claimReceivedAccountName: (row.claim_received_account_name as string | null) ?? null,
     direction: (row.direction as Transaction['direction']) ?? null,
     idempotencyKey: (row.idempotency_key as string | null) ?? null,
     clientId: (row.client_id as string | null) ?? null,
