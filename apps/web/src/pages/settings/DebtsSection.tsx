@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Landmark, Trash2 } from 'lucide-react';
 import { toMajorString } from '@finance/shared';
 import { api, ApiError } from '../../api/client';
+import { ConfirmModal } from '../../components/ConfirmModal';
 import { useI18n } from '../../i18n/I18nContext';
 import { useDebts } from '../../hooks/useDebts';
 import { AmountEditInput } from '../../components/AmountEditInput';
@@ -9,20 +10,21 @@ import { ReorderableList } from '../../components/ReorderableList';
 import { formatAmountDisplay, sanitizeAmountInput } from '../../utils/amountFormat';
 import { applyLocalOrder, saveLocalOrder } from '../../utils/localOrder';
 
-const DEV_BASE_CURRENCY = 'THB';
+const baseCurrency = 'THB';
 const DEBT_ORDER_KEY = 'finance.debts-order';
 
 export function DebtsSection({ onError }: { onError: (message: string) => void }) {
-  const { t } = useI18n();
+  const { t, baseCurrency } = useI18n();
   const { debts, refresh } = useDebts(onError);
   const [name, setName] = useState('');
   const [amount, setAmount] = useState('');
   const [, setOrderVersion] = useState(0);
+  const [confirmArchiveId, setConfirmArchiveId] = useState<string | null>(null);
 
   async function add() {
     if (!name.trim()) return;
     try {
-      await api.createDebt({ name: name.trim(), currencyCode: DEV_BASE_CURRENCY, balanceMajor: amount || '0' });
+      await api.createDebt({ name: name.trim(), currencyCode: baseCurrency, balanceMajor: amount || '0' });
       setName('');
       setAmount('');
       await refresh();
@@ -41,6 +43,7 @@ export function DebtsSection({ onError }: { onError: (message: string) => void }
   }
 
   async function archive(id: string) {
+    setConfirmArchiveId(null);
     try {
       await api.archiveDebt(id);
       await refresh();
@@ -86,7 +89,7 @@ export function DebtsSection({ onError }: { onError: (message: string) => void }
               {dragHandle}
               <Landmark size={18} className="ic-amber" />
               <span className="card-row-name">{d.name}</span>
-              <button className="icon-btn" onClick={() => archive(d.id)}>
+              <button className="icon-btn" onClick={() => setConfirmArchiveId(d.id)}>
                 <Trash2 size={14} />
               </button>
             </div>
@@ -98,6 +101,14 @@ export function DebtsSection({ onError }: { onError: (message: string) => void }
             </div>
           </>
         )}
+      />
+
+      <ConfirmModal
+        isOpen={confirmArchiveId !== null}
+        message={t('confirm.debtMessage')}
+        confirmText={t('confirm.debtConfirm')}
+        onConfirm={() => confirmArchiveId && archive(confirmArchiveId)}
+        onCancel={() => setConfirmArchiveId(null)}
       />
     </section>
   );

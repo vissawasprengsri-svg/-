@@ -2,20 +2,21 @@ import { useState } from 'react';
 import { CreditCard, Trash2, Wallet } from 'lucide-react';
 import { add, formatCurrency, toMajorString, zero } from '@finance/shared';
 import { api, ApiError } from '../../api/client';
+import { ConfirmModal } from '../../components/ConfirmModal';
 import { useI18n } from '../../i18n/I18nContext';
 import { useAccounts } from '../../hooks/useAccounts';
 import { AmountEditInput } from '../../components/AmountEditInput';
 import { ReorderableList } from '../../components/ReorderableList';
 import { formatAmountDisplay, sanitizeAmountInput } from '../../utils/amountFormat';
 
-const DEV_BASE_CURRENCY = 'THB';
-
 export function AccountsSection({ onError }: { onError: (message: string) => void }) {
-  const { t } = useI18n();
+  const { t, baseCurrency } = useI18n();
   const { accounts, refresh } = useAccounts(onError);
   const [newAccountName, setNewAccountName] = useState('');
   const [newOpeningBalance, setNewOpeningBalance] = useState('');
   const [newCardName, setNewCardName] = useState('');
+  // Accounts and cards share one archive path, so one confirm target covers both lists.
+  const [confirmArchiveId, setConfirmArchiveId] = useState<string | null>(null);
 
   const nonCards = accounts.filter((a) => a.kind !== 'credit_card' && !a.isArchived);
   const cards = accounts.filter((a) => a.kind === 'credit_card' && !a.isArchived);
@@ -25,7 +26,7 @@ export function AccountsSection({ onError }: { onError: (message: string) => voi
     const name = newAccountName.trim();
     if (!name) return;
     try {
-      await api.createAccount({ name, kind: 'cash', currencyCode: DEV_BASE_CURRENCY, openingBalanceMajor: newOpeningBalance || undefined });
+      await api.createAccount({ name, kind: 'cash', currencyCode: baseCurrency, openingBalanceMajor: newOpeningBalance || undefined });
       setNewAccountName('');
       setNewOpeningBalance('');
       await refresh();
@@ -47,7 +48,7 @@ export function AccountsSection({ onError }: { onError: (message: string) => voi
     const name = newCardName.trim();
     if (!name) return;
     try {
-      await api.createAccount({ name, kind: 'credit_card', currencyCode: DEV_BASE_CURRENCY });
+      await api.createAccount({ name, kind: 'credit_card', currencyCode: baseCurrency });
       setNewCardName('');
       await refresh();
     } catch (err) {
@@ -56,6 +57,7 @@ export function AccountsSection({ onError }: { onError: (message: string) => voi
   }
 
   async function archive(id: string) {
+    setConfirmArchiveId(null);
     try {
       await api.archiveAccount(id);
       await refresh();
@@ -131,7 +133,7 @@ export function AccountsSection({ onError }: { onError: (message: string) => voi
               onCommit={(raw) => setBalance(a.id, raw)}
             />
             <span className="meta">{a.currencyCode}</span>
-            <button className="icon-btn" onClick={() => archive(a.id)}>
+            <button className="icon-btn" onClick={() => setConfirmArchiveId(a.id)}>
               <Trash2 size={14} />
             </button>
           </>
@@ -167,7 +169,7 @@ export function AccountsSection({ onError }: { onError: (message: string) => voi
                 {dragHandle}
                 <CreditCard size={18} className="ic-blue" />
                 <span className="card-row-name">{c.name}</span>
-                <button className="icon-btn" onClick={() => archive(c.id)}>
+                <button className="icon-btn" onClick={() => setConfirmArchiveId(c.id)}>
                   <Trash2 size={14} />
                 </button>
               </div>
@@ -193,6 +195,15 @@ export function AccountsSection({ onError }: { onError: (message: string) => voi
             </>
           );
         }}
+      />
+
+      <ConfirmModal
+        isOpen={confirmArchiveId !== null}
+        title={t('confirm.accountTitle')}
+        message={t('confirm.accountMessage')}
+        confirmText={t('confirm.accountConfirm')}
+        onConfirm={() => confirmArchiveId && archive(confirmArchiveId)}
+        onCancel={() => setConfirmArchiveId(null)}
       />
     </section>
   );

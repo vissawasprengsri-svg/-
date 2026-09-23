@@ -23,6 +23,10 @@ interface I18nValue {
   locale: LocaleCode;
   dir: 'ltr' | 'rtl';
   timezone: string;
+  /** The user's own base currency (`users.base_currency`) — the one every amount
+   * gets converted into for cross-currency totals. Falls back to 'THB' only
+   * for the brief window before `/settings/locale` resolves on first load. */
+  baseCurrency: string;
   setLocale: (locale: LocaleCode) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
   formatDate: (isoDate: string) => string;
@@ -34,15 +38,18 @@ const I18nCtx = createContext<I18nValue | null>(null);
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<LocaleCode>(() => (localStorage.getItem(LOCALE_KEY) as LocaleCode) || DEFAULT_LOCALE);
   const [timezone, setTimezone] = useState('Asia/Bangkok');
+  const [baseCurrency, setBaseCurrency] = useState('THB');
 
-  // `users.locale`/`users.timezone` are the source of truth; localStorage
-  // is just a fast, offline-safe first paint before this resolves.
+  // `users.locale`/`users.timezone`/`users.base_currency` are the source of
+  // truth; localStorage (locale only) is just a fast, offline-safe first
+  // paint before this resolves.
   useEffect(() => {
     api
       .getLocale()
       .then((res) => {
         setLocaleState(res.locale);
         setTimezone(res.timezone);
+        setBaseCurrency(res.baseCurrency);
       })
       .catch(() => {
         // API unreachable: keep the localStorage/default fallback.
@@ -68,6 +75,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       locale,
       dir: dirFor(locale),
       timezone,
+      baseCurrency,
       setLocale,
       t: (key, vars) => {
         const found = lookup(dict, key.split('.'));
@@ -86,7 +94,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       formatDateTime: (isoTimestamp) =>
         new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }).format(new Date(isoTimestamp)),
     };
-  }, [locale, timezone]);
+  }, [locale, timezone, baseCurrency]);
 
   return <I18nCtx.Provider value={value}>{children}</I18nCtx.Provider>;
 }

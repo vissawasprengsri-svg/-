@@ -2,18 +2,23 @@ import { useEffect, useState } from 'react';
 import {
   ArrowDownCircle,
   ArrowUpCircle,
+  CalendarClock,
+  Check,
   ChevronRight,
   Clock,
   CreditCard,
   HandCoins,
   Landmark,
   LayoutGrid,
+  Pencil,
   TrendingUp,
   Trash2,
+  X,
 } from 'lucide-react';
-import type { Transaction, TransactionType } from '@finance/shared';
-import { add, compare, formatCurrency, zero } from '@finance/shared';
+import type { Transaction, TransactionType, UpcomingBill } from '@finance/shared';
+import { add, compare, formatCurrency, toMajorString, zero } from '@finance/shared';
 import { api, ApiError } from '../api/client';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { useI18n } from '../i18n/I18nContext';
 import { useAccounts } from '../hooks/useAccounts';
 import { useDebts } from '../hooks/useDebts';
@@ -44,19 +49,36 @@ export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onDelete
   const [recent, setRecent] = useState<Transaction[]>([]);
   const [outstanding, setOutstanding] = useState(zero());
   const [unsortedCount, setUnsortedCount] = useState(0);
+  const [bills, setBills] = useState<UpcomingBill[]>([]);
+  const [payingBillId, setPayingBillId] = useState<string | null>(null);
+  const [payAccountId, setPayAccountId] = useState('');
+  const [showAddBill, setShowAddBill] = useState(false);
+  // null while jotting a new bill; the bill's id while editing an existing one —
+  // the same form serves both, so only the submit target differs.
+  const [editingBillId, setEditingBillId] = useState<string | null>(null);
+  const [newBillTitle, setNewBillTitle] = useState('');
+  const [newBillAmount, setNewBillAmount] = useState('');
+  const [newBillDueDate, setNewBillDueDate] = useState('');
+  const [newBillNote, setNewBillNote] = useState('');
+  const [confirmDeleteTx, setConfirmDeleteTx] = useState<Transaction | null>(null);
+  const [confirmDeleteBillId, setConfirmDeleteBillId] = useState<string | null>(null);
 
   async function refresh() {
     try {
-      const [tx, summary, unsorted] = await Promise.all([
-        api.listTransactions(),
+      const [tx, summary, unsorted, upcomingBills] = await Promise.all([
+        // Only "recent" is ever shown here, so ask the API for exactly that
+        // page instead of pulling a full (now-unbounded) list and slicing client-side.
+        api.listTransactions({ limit: 8 }),
         api.getClaimsSummary(),
         api.listUnsortedExpenses(),
+        api.listUpcomingBills(),
         refreshAccounts(),
         refreshDebts(),
       ]);
-      setRecent(tx.transactions.slice(0, 8));
+      setRecent(tx.transactions);
       setOutstanding(summary.summary.totalOutstanding);
       setUnsortedCount(unsorted.transactions.length);
+      setBills(upcomingBills.bills);
     } catch (err) {
       if (err instanceof ApiError) onError(err.message);
     }
@@ -71,6 +93,7 @@ export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onDelete
   const debtTotal = debts.reduce((sum, d) => add(sum, d.currentBalance), zero());
 
   async function remove(tx: Transaction) {
+    setConfirmDeleteTx(null);
     try {
       await api.deleteTransaction(tx.id);
       await refresh();
@@ -83,42 +106,117 @@ export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onDelete
     }
   }
 
+  function daysUntil(dueDate: string): number {
+    const today = new Date(new Date().toDateString());
+    const due = new Date(`${dueDate}T00:00:00`);
+    return Math.round((due.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+  }
+
+  function startPayBill(bill: UpcomingBill) {
+    setPayingBillId(bill.id);
+    setPayAccountId(accounts[0]?.id ?? '');
+  }
+
+  async function confirmPayBill(id: string) {
+    if (!payAccountId) return;
+    try {
+      await api.payUpcomingBill(id, payAccountId);
+      setPayingBillId(null);
+      setPayAccountId('');
+      await refresh();
+    } catch (err) {
+      if (err instanceof ApiError) onError(err.message);
+    }
+  }
+
+  async function removeBill(id: string) {
+    setConfirmDeleteBillId(null);
+    try {
+      await api.deleteUpcomingBill(id);
+      await refresh();
+    } catch (err) {
+      if (err instanceof ApiError) onError(err.message);
+    }
+  }
+
+  function closeBillForm() {
+    setShowAddBill(false);
+    setEditingBillId(null);
+    setNewBillTitle('');
+    setNewBillAmount('');
+    setNewBillDueDate('');
+    setNewBillNote('');
+  }
+
+  function startEditBill(bill: UpcomingBill) {
+    setEditingBillId(bill.id);
+    setShowAddBill(true);
+    setPayingBillId(null);
+    setNewBillTitle(bill.title);
+    setNewBillAmount(toMajorString(bill.amount, 2));
+    setNewBillDueDate(bill.dueDate);
+    setNewBillNote(bill.note ?? '');
+  }
+
+  async function saveBill() {
+    if (!newBillTitle.trim() || !newBillAmount || !newBillDueDate) return;
+    const payload = {
+      title: newBillTitle.trim(),
+      amountMajor: newBillAmount,
+      dueDate: newBillDueDate,
+      note: newBillNote.trim() || null,
+    };
+    try {
+      if (editingBillId) {
+        await api.updateUpcomingBill(editingBillId, payload);
+      } else {
+        await api.createUpcomingBill(payload);
+      }
+      closeBillForm();
+      await refresh();
+    } catch (err) {
+      if (err instanceof ApiError) onError(err.message);
+    }
+  }
+
   return (
     <div className="stack">
-      <div className="card card-main">
-        <span className="card-label">{t('home.availableNow')}</span>
-        <span className="card-amount">{formatCurrency(availableCash, '฿', 2)}</span>
-      </div>
-
-      <div className="card card-amber" onClick={onGoClaims}>
-        <Clock size={20} />
-        <div>
-          <span className="card-label">{t('home.outstanding')}</span>
-          <span className="card-amount-sm">{formatCurrency(outstanding, '฿', 2)}</span>
+      <div className="summary-grid">
+        <div className="card card-main">
+          <span className="card-label">{t('home.availableNow')}</span>
+          <span className="card-amount">{formatCurrency(availableCash, '฿', 2)}</span>
         </div>
-        <ChevronRight size={18} className="chevron" />
-      </div>
 
-      {compare(debtTotal, '0') > 0 && (
-        <div className="card card-purple">
-          <Landmark size={20} />
+        <div className="card card-amber" onClick={onGoClaims}>
+          <Clock size={20} />
           <div>
-            <span className="card-label">{t('home.debtTotal')}</span>
-            <span className="card-amount-sm">{formatCurrency(debtTotal, '฿', 2)}</span>
-          </div>
-        </div>
-      )}
-
-      {unsortedCount > 0 && (
-        <div className="card card-blue" onClick={onGoCategorize}>
-          <LayoutGrid size={20} />
-          <div>
-            <span className="card-label">{t('home.unsortedCount')}</span>
-            <span className="card-amount-sm">{t('home.items', { count: unsortedCount })}</span>
+            <span className="card-label">{t('home.outstanding')}</span>
+            <span className="card-amount-sm">{formatCurrency(outstanding, '฿', 2)}</span>
           </div>
           <ChevronRight size={18} className="chevron" />
         </div>
-      )}
+
+        {compare(debtTotal, '0') > 0 && (
+          <div className="card card-purple">
+            <Landmark size={20} />
+            <div>
+              <span className="card-label">{t('home.debtTotal')}</span>
+              <span className="card-amount-sm">{formatCurrency(debtTotal, '฿', 2)}</span>
+            </div>
+          </div>
+        )}
+
+        {unsortedCount > 0 && (
+          <div className="card card-blue" onClick={onGoCategorize}>
+            <LayoutGrid size={20} />
+            <div>
+              <span className="card-label">{t('home.unsortedCount')}</span>
+              <span className="card-amount-sm">{t('home.items', { count: unsortedCount })}</span>
+            </div>
+            <ChevronRight size={18} className="chevron" />
+          </div>
+        )}
+      </div>
 
       <div className="quick-grid">
         <button onClick={() => onQuickAdd('income')}>
@@ -147,6 +245,108 @@ export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onDelete
         </button>
       </div>
 
+      <div className="categorize-bar">
+        <h2 style={{ margin: 0 }}>{t('home.upcomingBillsTitle')}</h2>
+        <button type="button" className="secondary-btn" onClick={() => (showAddBill ? closeBillForm() : setShowAddBill(true))}>
+          {t('home.addBill')}
+        </button>
+      </div>
+
+      {showAddBill && (
+        <div className="claim-group">
+          {editingBillId && <strong className="bill-form-title">{t('home.editBillTitle')}</strong>}
+          <input
+            autoFocus
+            type="text"
+            placeholder={t('home.billTitlePlaceholder')}
+            value={newBillTitle}
+            onChange={(e) => setNewBillTitle(e.target.value)}
+          />
+          <div className="form-row">
+            <label>
+              <span>{t('form.amountLabel')}</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                placeholder={t('categorize.amountPlaceholder')}
+                value={newBillAmount}
+                onChange={(e) => setNewBillAmount(e.target.value)}
+              />
+            </label>
+            <label>
+              <span>{t('home.billDueDate')}</span>
+              <input type="date" value={newBillDueDate} onChange={(e) => setNewBillDueDate(e.target.value)} />
+            </label>
+          </div>
+          <input
+            type="text"
+            placeholder={t('form.notePlaceholder')}
+            value={newBillNote}
+            onChange={(e) => setNewBillNote(e.target.value)}
+          />
+          <div className="modal-actions">
+            <button type="button" className="secondary-btn" onClick={closeBillForm}>
+              {t('home.cancel')}
+            </button>
+            <button type="button" className="primary-btn" onClick={saveBill}>
+              {editingBillId ? t('home.saveBill') : t('form.submit')}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <ul className="list">
+        {bills.length === 0 && <li className="empty">{t('home.upcomingBillsEmpty')}</li>}
+        {bills.map((bill) => {
+          const days = daysUntil(bill.dueDate);
+          const badgeClass = days < 0 ? 'status-chip bill-overdue' : days === 0 ? 'status-chip bill-today' : 'status-chip';
+          const badgeText = days < 0 ? t('home.billOverdue', { days: Math.abs(days) }) : days === 0 ? t('home.billDueToday') : t('home.billDueIn', { days });
+          return (
+            <li key={bill.id} className="row">
+              <CalendarClock size={18} className={days < 0 ? 'ic-red' : 'ic-amber'} />
+              <div className="row-info">
+                <span className="desc">{bill.title}</span>
+                <span className="meta">
+                  {formatDate(bill.dueDate)} · <i className={badgeClass}>{badgeText}</i>
+                  {bill.note && ` · ${bill.note}`}
+                </span>
+              </div>
+              <span className="amt expense">{formatCurrency(bill.amount, '฿', 2)}</span>
+              {payingBillId === bill.id ? (
+                <>
+                  <select value={payAccountId} onChange={(e) => setPayAccountId(e.target.value)}>
+                    <option value="">{t('home.payFrom')}</option>
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button className="icon-btn" onClick={() => confirmPayBill(bill.id)} disabled={!payAccountId}>
+                    <Check size={14} />
+                  </button>
+                  <button className="icon-btn" onClick={() => setPayingBillId(null)}>
+                    <X size={14} />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className="received-btn" onClick={() => startPayBill(bill)}>
+                    <Check size={14} /> {t('home.markPaid')}
+                  </button>
+                  <button className="icon-btn" onClick={() => startEditBill(bill)} aria-label={t('home.editBill')}>
+                    <Pencil size={14} />
+                  </button>
+                  <button className="icon-btn" onClick={() => setConfirmDeleteBillId(bill.id)}>
+                    <Trash2 size={14} />
+                  </button>
+                </>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
       <h2>{t('home.recent')}</h2>
       <ul className="list">
         {recent.length === 0 && <li className="empty">{t('home.empty')}</li>}
@@ -160,13 +360,26 @@ export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onDelete
               </span>
             </div>
             <span className={`amt ${tx.type === 'income' ? 'income' : 'expense'}`}>{formatCurrency(tx.amount, '฿', 2)}</span>
-            <button className="icon-btn" onClick={() => remove(tx)}>
+            <button className="icon-btn" onClick={() => setConfirmDeleteTx(tx)}>
               <Trash2 size={14} />
             </button>
           </li>
         ))}
       </ul>
       <p className="hint">{t('home.undoHint')}</p>
+
+      <ConfirmModal
+        isOpen={confirmDeleteTx !== null}
+        message={t('confirm.transactionMessage')}
+        onConfirm={() => confirmDeleteTx && remove(confirmDeleteTx)}
+        onCancel={() => setConfirmDeleteTx(null)}
+      />
+      <ConfirmModal
+        isOpen={confirmDeleteBillId !== null}
+        message={t('confirm.billMessage')}
+        onConfirm={() => confirmDeleteBillId && removeBill(confirmDeleteBillId)}
+        onCancel={() => setConfirmDeleteBillId(null)}
+      />
     </div>
   );
 }

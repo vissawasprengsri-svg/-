@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { ArrowLeft, LogOut } from 'lucide-react';
 import type { NotificationPreference, NotificationRuleCode, UserSettings } from '@finance/shared';
 import { NOTIFICATION_RULE_CODES } from '@finance/shared';
 import { api, ApiError } from '../api/client';
@@ -8,6 +8,7 @@ import { AccountsSection } from './settings/AccountsSection';
 import { DebtsSection } from './settings/DebtsSection';
 import { CategoriesSection } from './settings/CategoriesSection';
 import { TrashSection } from './settings/TrashSection';
+import { DataSection } from './settings/DataSection';
 import { LocaleSection } from './settings/LocaleSection';
 import { BudgetsPage } from './BudgetsPage';
 import { RecurringPage } from './RecurringPage';
@@ -142,15 +143,29 @@ function NotificationSettingsSection({ onError }: { onError: (message: string) =
   );
 }
 
-export function SettingsPage({ onClose, onError, onChanged }: { onClose: () => void; onError: (message: string) => void; onChanged: () => void }) {
+export function SettingsPage({
+  onClose,
+  onError,
+  onChanged,
+  onLogout,
+}: {
+  onClose: () => void;
+  onError: (message: string) => void;
+  onChanged: () => void;
+  onLogout: () => void;
+}) {
   const { t } = useI18n();
   return (
     <div className="settings-overlay">
       <div className="settings-header">
-        <h1>{t('settings.title')}</h1>
-        <button className="icon-btn" onClick={onClose}>
-          <X size={20} />
+        {/* Back-style, not an X: this sits at the near (left) edge next to the
+            title on purpose — a close button parked at the far top-right
+            corner is a long, deliberate mouse trip on a wide desktop window,
+            for no benefit over putting it where the eye already is. */}
+        <button className="icon-btn back-btn" onClick={onClose} aria-label={t('settings.close')}>
+          <ArrowLeft size={20} />
         </button>
+        <h1>{t('settings.title')}</h1>
       </div>
       <div className="settings-body stack">
         <AccountsSection onError={onError} />
@@ -166,7 +181,14 @@ export function SettingsPage({ onClose, onError, onChanged }: { onClose: () => v
         </div>
         <NotificationSettingsSection onError={onError} />
         <LocaleSection />
+        <DataSection onError={onError} onImported={onChanged} />
         <TrashSection onError={onError} onRestored={onChanged} />
+        <section className="form-card">
+          <h2>{t('auth.accountSection')}</h2>
+          <button className="submit" onClick={onLogout}>
+            <LogOut size={16} /> {t('auth.logout')}
+          </button>
+        </section>
       </div>
     </div>
   );

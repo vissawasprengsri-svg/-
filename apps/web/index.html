@@ -3,6 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Tints the browser's own address bar / status bar to match the app (mobile
+       Chrome/Safari read this directly outside the installed-PWA context too —
+       the manifest's theme_color alone only applies once actually installed). -->
+    <meta name="theme-color" content="#1B4965" />
+    <!-- Base/body typeface: Inter carries Latin text and figures, Noto Sans Thai
+         covers Thai glyphs Inter doesn't have — the browser falls through to it
+         per-character automatically, so Thai and English sit at a matched size
+         and weight instead of the mismatched-metrics look you get mixing an
+         English webfont with a Thai system font. Loaded as <link> rather than
+         a CSS @import so the browser can start the font fetch as soon as it
+         parses the HTML, instead of waiting on index.css to load and parse
+         first. Display/mono headings keep their existing separate fonts,
+         loaded in index.css — this is only the base reading typeface. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Noto+Sans+Thai:wght@300;400;500;600&display=swap"
+      rel="stylesheet"
+    />
     <title>บัญชีเงินผม</title>
   </head>
   <body>

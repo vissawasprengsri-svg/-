@@ -2,17 +2,17 @@ import { useEffect, useState } from 'react';
 import type { Budget } from '@finance/shared';
 import { compare } from '@finance/shared';
 import { api, ApiError } from '../api/client';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { useI18n } from '../i18n/I18nContext';
 import { useCurrencies } from '../hooks/useCurrencies';
 import { endOfMonthStr, todayStr } from '../utils/date';
 
-const DEV_BASE_CURRENCY = 'THB';
-
 export function BudgetsPage({ onError }: { onError: (message: string) => void }) {
-  const { t, locale } = useI18n();
+  const { t, locale, baseCurrency } = useI18n();
   const { format: formatMoney } = useCurrencies();
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [form, setForm] = useState({ name: '', amount: '', periodStart: todayStr(), periodEnd: endOfMonthStr(), rollover: false });
+  const [confirmArchiveId, setConfirmArchiveId] = useState<string | null>(null);
 
   async function refresh() {
     try {
@@ -36,7 +36,7 @@ export function BudgetsPage({ onError }: { onError: (message: string) => void })
       await api.createBudget({
         name: form.name.trim(),
         amountMajor: form.amount,
-        currencyCode: DEV_BASE_CURRENCY,
+        currencyCode: baseCurrency,
         periodType: 'monthly',
         periodStart: form.periodStart,
         periodEnd: form.periodEnd,
@@ -50,6 +50,7 @@ export function BudgetsPage({ onError }: { onError: (message: string) => void })
   }
 
   async function archive(id: string) {
+    setConfirmArchiveId(null);
     try {
       await api.archiveBudget(id);
       await refresh();
@@ -69,7 +70,7 @@ export function BudgetsPage({ onError }: { onError: (message: string) => void })
         <div className="form-row">
           <label>
             <span>
-              {t('budgets.amount')} ({DEV_BASE_CURRENCY})
+              {t('budgets.amount')} ({baseCurrency})
             </span>
             <input type="number" step="0.01" value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} />
           </label>
@@ -104,7 +105,7 @@ export function BudgetsPage({ onError }: { onError: (message: string) => void })
                   {b.name} {!b.isActive && <em className="inactive-badge">{t('budgets.inactive')}</em>}
                 </span>
                 {b.isActive && (
-                  <button className="del" onClick={() => archive(b.id)}>
+                  <button className="del" onClick={() => setConfirmArchiveId(b.id)}>
                     {t('budgets.archive')}
                   </button>
                 )}
@@ -117,6 +118,15 @@ export function BudgetsPage({ onError }: { onError: (message: string) => void })
           );
         })}
       </ul>
+
+      <ConfirmModal
+        isOpen={confirmArchiveId !== null}
+        title={t('budgets.archive')}
+        message={t('confirm.budgetMessage')}
+        confirmText={t('confirm.budgetConfirm')}
+        onConfirm={() => confirmArchiveId && archive(confirmArchiveId)}
+        onCancel={() => setConfirmArchiveId(null)}
+      />
     </div>
   );
 }
