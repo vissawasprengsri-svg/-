@@ -20,6 +20,9 @@ export type LocaleCode = (typeof SUPPORTED_LOCALES)[number]['code'];
 
 export type AccountKind = 'cash' | 'bank' | 'ewallet' | 'credit_card';
 
+/** Purely cosmetic — which network badge to draw on the account's dashboard card. */
+export type AccountNetwork = 'visa' | 'mastercard' | 'jcb' | 'amex' | 'unionpay' | 'truemoney' | 'other';
+
 export type InvestmentDirection = 'buy' | 'sell' | 'dividend' | 'fee';
 
 export type AuditAction = 'create' | 'update' | 'delete' | 'restore' | 'status_change';
@@ -42,6 +45,9 @@ export interface Account {
   currentBalance: MoneyMinor;
   icon: string | null;
   color: string | null;
+  /** Last 4 digits shown on the dashboard's card visual — display only, never the full number. */
+  last4: string | null;
+  network: AccountNetwork | null;
   isArchived: boolean;
   sortOrder: number;
   createdAt: string;

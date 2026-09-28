@@ -13,6 +13,7 @@ import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { useUndoRedo } from './hooks/useUndoRedo';
 import { useBrowserBack } from './hooks/useBrowserBack';
+import { useUIScale } from './hooks/useUIScale';
 import { useI18n } from './i18n/I18nContext';
 
 type Tab = 'home' | 'add' | 'categorize' | 'claims' | 'reports';
@@ -31,6 +32,7 @@ export default function App() {
   // theme is a per-device preference (screen glare varies a lot between an office desk and
   // outdoors), so it's kept in localStorage rather than synced server-side.
   const [theme, setTheme] = useState<Theme>('light');
+  const [uiScale, setUIScale] = useUIScale();
   // 'checking' until the boot probe answers, so a signed-in reload doesn't flash the
   // login screen before the cookie has been validated.
   const [auth, setAuth] = useState<'checking' | 'needs-setup' | 'signed-out' | 'signed-in'>('checking');
@@ -191,6 +193,8 @@ export default function App() {
             onQuickAdd={quickAdd}
             onGoCategorize={() => setTab('categorize')}
             onGoClaims={() => setTab('claims')}
+            onGoSettings={() => setSettingsOpen(true)}
+            onGoReports={() => setTab('reports')}
             onDeleted={onDeleted}
             onError={setError}
           />
@@ -223,6 +227,8 @@ export default function App() {
           onError={setError}
           onChanged={bump}
           onLogout={logout}
+          uiScale={uiScale}
+          onUIScaleChange={setUIScale}
         />
       )}
 

@@ -10,6 +10,7 @@ import { CategoriesSection } from './settings/CategoriesSection';
 import { TrashSection } from './settings/TrashSection';
 import { DataSection } from './settings/DataSection';
 import { LocaleSection } from './settings/LocaleSection';
+import { AppearanceSection } from './settings/AppearanceSection';
 import { BudgetsPage } from './BudgetsPage';
 import { RecurringPage } from './RecurringPage';
 
@@ -148,11 +149,15 @@ export function SettingsPage({
   onError,
   onChanged,
   onLogout,
+  uiScale,
+  onUIScaleChange,
 }: {
   onClose: () => void;
   onError: (message: string) => void;
   onChanged: () => void;
   onLogout: () => void;
+  uiScale: number;
+  onUIScaleChange: (scale: number) => void;
 }) {
   const { t } = useI18n();
   return (
@@ -180,6 +185,7 @@ export function SettingsPage({
           <RecurringPage onError={onError} />
         </div>
         <NotificationSettingsSection onError={onError} />
+        <AppearanceSection scale={uiScale} onChange={onUIScaleChange} />
         <LocaleSection />
         <DataSection onError={onError} onImported={onChanged} />
         <TrashSection onError={onError} onRestored={onChanged} />

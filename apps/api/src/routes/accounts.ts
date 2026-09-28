@@ -2,7 +2,15 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { withTransaction } from '../db/pool.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
-import { archiveAccount, createAccount, listAccounts, reorderAccounts, updateAccountBalance, updateCreditLimit } from '../services/accountService.js';
+import {
+  archiveAccount,
+  createAccount,
+  listAccounts,
+  reorderAccounts,
+  updateAccountBalance,
+  updateAccountCardDetails,
+  updateCreditLimit,
+} from '../services/accountService.js';
 
 export const accountsRouter = Router();
 
@@ -14,6 +22,8 @@ accountsRouter.get(
   })
 );
 
+const NETWORKS = ['visa', 'mastercard', 'jcb', 'amex', 'unionpay', 'truemoney', 'other'] as const;
+
 const createSchema = z.object({
   name: z.string().min(1),
   kind: z.enum(['cash', 'bank', 'ewallet', 'credit_card']),
@@ -22,6 +32,8 @@ const createSchema = z.object({
   creditLimitMajor: z.string().optional(),
   dueDay: z.number().int().min(1).max(31).optional().nullable(),
   statementDay: z.number().int().min(1).max(31).optional().nullable(),
+  last4: z.string().regex(/^\d{4}$/).optional().nullable(),
+  network: z.enum(NETWORKS).optional().nullable(),
 });
 
 accountsRouter.post(
@@ -59,6 +71,21 @@ accountsRouter.patch(
   asyncHandler(async (req, res) => {
     const { balanceMajor } = balanceSchema.parse(req.body);
     await withTransaction((client) => updateAccountBalance(client, req.userId, req.params.id!, balanceMajor));
+    res.json({ ok: true });
+  })
+);
+
+const cardDetailsSchema = z.object({
+  last4: z.string().regex(/^\d{4}$/).optional().nullable(),
+  network: z.enum(NETWORKS).optional().nullable(),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().nullable(),
+});
+
+accountsRouter.patch(
+  '/:id/card-details',
+  asyncHandler(async (req, res) => {
+    const input = cardDetailsSchema.parse(req.body);
+    await withTransaction((client) => updateAccountCardDetails(client, req.userId, req.params.id!, input));
     res.json({ ok: true });
   })
 );

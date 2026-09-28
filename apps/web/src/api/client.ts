@@ -283,12 +283,18 @@ export const api = {
     creditLimitMajor?: string;
     dueDay?: number | null;
     statementDay?: number | null;
+    last4?: string | null;
+    network?: AccountWithCard['network'];
   }) => request<{ account: AccountWithCard }>('POST', '/accounts', input),
   archiveAccount: (id: string) => request<void>('DELETE', `/accounts/${id}`),
   updateCreditLimit: (id: string, creditLimitMajor: string) =>
     request<{ ok: true }>('PATCH', `/accounts/${id}/credit-limit`, { creditLimitMajor }),
   updateAccountBalance: (id: string, balanceMajor: string) =>
     request<{ ok: true }>('PATCH', `/accounts/${id}/balance`, { balanceMajor }),
+  updateAccountCardDetails: (
+    id: string,
+    input: { last4?: string | null; network?: AccountWithCard['network'] | null; color?: string | null }
+  ) => request<{ ok: true }>('PATCH', `/accounts/${id}/card-details`, input),
   reorderAccounts: (orderedIds: string[]) => request<{ ok: true }>('PATCH', '/accounts/reorder', { orderedIds }),
 
   listDebts: () => request<{ debts: Debt[] }>('GET', '/debts'),

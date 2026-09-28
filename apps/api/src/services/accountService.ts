@@ -18,6 +18,8 @@ function mapRow(row: Record<string, unknown>): AccountWithCard {
     currentBalance: String(row.current_balance),
     icon: (row.icon as string | null) ?? null,
     color: (row.color as string | null) ?? null,
+    last4: (row.last4 as string | null) ?? null,
+    network: (row.network as AccountWithCard['network']) ?? null,
     isArchived: Boolean(row.is_archived),
     sortOrder: Number(row.sort_order),
     createdAt: new Date(row.created_at as string).toISOString(),
@@ -49,15 +51,17 @@ export interface CreateAccountInput {
   creditLimitMajor?: string;
   dueDay?: number | null;
   statementDay?: number | null;
+  last4?: string | null;
+  network?: AccountWithCard['network'];
 }
 
 export async function createAccount(client: DbClient, userId: string, input: CreateAccountInput): Promise<AccountWithCard> {
   const minorUnit = await getCurrencyMinorUnit(client, input.currencyCode);
   const openingMinor = input.openingBalanceMajor ? fromMajorInput(input.openingBalanceMajor, minorUnit) : '0';
   const res = await client.query(
-    `INSERT INTO accounts (user_id, name, kind, currency_code, opening_balance, current_balance)
-     VALUES ($1,$2,$3,$4,$5,$5) RETURNING id`,
-    [userId, input.name, input.kind, input.currencyCode, openingMinor]
+    `INSERT INTO accounts (user_id, name, kind, currency_code, opening_balance, current_balance, last4, network)
+     VALUES ($1,$2,$3,$4,$5,$5,$6,$7) RETURNING id`,
+    [userId, input.name, input.kind, input.currencyCode, openingMinor, input.last4 ?? null, input.network ?? null]
   );
   const accountId = res.rows[0].id;
 
@@ -92,6 +96,45 @@ export async function updateCreditLimit(client: DbClient, userId: string, accoun
   const minorUnit = await getCurrencyMinorUnit(client, accountRes.rows[0]!.currency_code);
   const limitMinor = fromMajorInput(limitMajor, minorUnit);
   await client.query('UPDATE credit_cards SET credit_limit = $1 WHERE account_id = $2', [limitMinor, accountId]);
+}
+
+/**
+ * Cosmetic-only fields for the dashboard's gradient card visual — see
+ * Account.last4/network/color. A partial update: the frontend sends exactly
+ * one of these per call (the last4 text box commits on blur, the network
+ * dropdown commits on change, the color swatch commits on change), so only
+ * the key that's actually present in `input` gets written — checked with
+ * `in`, not `??`, so `{ network: null }` (the user picked "no network")
+ * still clears just that column instead of also clobbering the others back
+ * to null because they weren't part of this call.
+ */
+export async function updateAccountCardDetails(
+  client: DbClient,
+  userId: string,
+  accountId: string,
+  input: { last4?: string | null; network?: AccountWithCard['network'] | null; color?: string | null }
+): Promise<void> {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if ('last4' in input) {
+    values.push(input.last4);
+    sets.push(`last4 = $${values.length}`);
+  }
+  if ('network' in input) {
+    values.push(input.network);
+    sets.push(`network = $${values.length}`);
+  }
+  if ('color' in input) {
+    values.push(input.color);
+    sets.push(`color = $${values.length}`);
+  }
+  if (sets.length === 0) return;
+  values.push(accountId, userId);
+  const res = await client.query(
+    `UPDATE accounts SET ${sets.join(', ')} WHERE id = $${values.length - 1} AND user_id = $${values.length} AND deleted_at IS NULL`,
+    values
+  );
+  if (res.rowCount === 0) throw Errors.notFound('account');
 }
 
 /**

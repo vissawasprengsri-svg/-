@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { CreditCard, Trash2, Wallet } from 'lucide-react';
+import type { AccountNetwork } from '@finance/shared';
 import { add, formatCurrency, toMajorString, zero } from '@finance/shared';
 import { api, ApiError } from '../../api/client';
 import { ConfirmModal } from '../../components/ConfirmModal';
@@ -8,6 +9,24 @@ import { useAccounts } from '../../hooks/useAccounts';
 import { AmountEditInput } from '../../components/AmountEditInput';
 import { ReorderableList } from '../../components/ReorderableList';
 import { formatAmountDisplay, sanitizeAmountInput } from '../../utils/amountFormat';
+import { accountAccentColor } from '../../utils/accountColor';
+
+const NETWORKS: AccountNetwork[] = ['visa', 'mastercard', 'jcb', 'amex', 'unionpay', 'truemoney', 'other'];
+
+/** Cosmetic-only network picker feeding the dashboard's card visual — see Account.network. */
+function NetworkSelect({ value, onChange }: { value: AccountNetwork | null; onChange: (v: AccountNetwork | null) => void }) {
+  const { t } = useI18n();
+  return (
+    <select value={value ?? ''} onChange={(e) => onChange((e.target.value || null) as AccountNetwork | null)}>
+      <option value="">{t('settings.networkNone')}</option>
+      {NETWORKS.map((n) => (
+        <option key={n} value={n}>
+          {t(`settings.network${n.charAt(0).toUpperCase()}${n.slice(1)}`)}
+        </option>
+      ))}
+    </select>
+  );
+}
 
 export function AccountsSection({ onError }: { onError: (message: string) => void }) {
   const { t, baseCurrency } = useI18n();
@@ -60,6 +79,35 @@ export function AccountsSection({ onError }: { onError: (message: string) => voi
     setConfirmArchiveId(null);
     try {
       await api.archiveAccount(id);
+      await refresh();
+    } catch (err) {
+      if (err instanceof ApiError) onError(err.message);
+    }
+  }
+
+  async function setLast4(id: string, last4: string) {
+    const trimmed = last4.trim();
+    if (trimmed && !/^\d{4}$/.test(trimmed)) return;
+    try {
+      await api.updateAccountCardDetails(id, { last4: trimmed || null });
+      await refresh();
+    } catch (err) {
+      if (err instanceof ApiError) onError(err.message);
+    }
+  }
+
+  async function setNetwork(id: string, network: AccountNetwork | null) {
+    try {
+      await api.updateAccountCardDetails(id, { network });
+      await refresh();
+    } catch (err) {
+      if (err instanceof ApiError) onError(err.message);
+    }
+  }
+
+  async function setColor(id: string, color: string) {
+    try {
+      await api.updateAccountCardDetails(id, { color });
       await refresh();
     } catch (err) {
       if (err instanceof ApiError) onError(err.message);
@@ -133,6 +181,23 @@ export function AccountsSection({ onError }: { onError: (message: string) => voi
               onCommit={(raw) => setBalance(a.id, raw)}
             />
             <span className="meta">{a.currencyCode}</span>
+            <input
+              type="color"
+              className="color-swatch-input"
+              title={t('settings.cardColor')}
+              value={a.color ?? accountAccentColor(a)}
+              onChange={(e) => setColor(a.id, e.target.value)}
+            />
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={4}
+              className="last4-input"
+              placeholder={t('settings.last4Placeholder')}
+              defaultValue={a.last4 ?? ''}
+              onBlur={(e) => setLast4(a.id, e.target.value)}
+            />
+            <NetworkSelect value={a.network} onChange={(n) => setNetwork(a.id, n)} />
             <button className="icon-btn" onClick={() => setConfirmArchiveId(a.id)}>
               <Trash2 size={14} />
             </button>
@@ -191,6 +256,25 @@ export function AccountsSection({ onError }: { onError: (message: string) => voi
                     onCommit={(raw) => setLimit(c.id, raw)}
                   />
                 </label>
+              </div>
+              <div className="card-row-fields">
+                <input
+                  type="color"
+                  className="color-swatch-input"
+                  title={t('settings.cardColor')}
+                  value={c.color ?? accountAccentColor(c)}
+                  onChange={(e) => setColor(c.id, e.target.value)}
+                />
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={4}
+                  className="last4-input"
+                  placeholder={t('settings.last4Placeholder')}
+                  defaultValue={c.last4 ?? ''}
+                  onBlur={(e) => setLast4(c.id, e.target.value)}
+                />
+                <NetworkSelect value={c.network} onChange={(n) => setNetwork(c.id, n)} />
               </div>
             </>
           );

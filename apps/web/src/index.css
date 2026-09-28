@@ -161,6 +161,47 @@ body {
 .card-purple .card-amount-sm { color: var(--danger); }
 .chevron { color: var(--chev); flex-shrink: 0; }
 
+/* ---------- Account/card gradient visuals (dashboard "บัตรและบัญชี" row) ---------- */
+.cards-row {
+  display: flex; gap: 14px; overflow-x: auto; padding-bottom: 4px;
+  scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
+}
+.cards-row-head { display: flex; justify-content: space-between; align-items: center; }
+.cards-row-head .linklike { font-size: 13px; }
+.card-visual {
+  flex: 0 0 240px; scroll-snap-align: start; border-radius: 18px; padding: 18px 20px; color: #fff;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 20px; min-height: 138px;
+  box-shadow: 0 8px 20px var(--shadow-md); position: relative; overflow: hidden;
+}
+/* A faint diagonal sheen, purely decorative — the kind of subtle texture that
+   keeps a flat gradient from reading as a plain colored rectangle. */
+.card-visual::after {
+  content: ''; position: absolute; inset: -40% -10% auto auto; width: 70%; height: 180%;
+  background: rgba(255,255,255,0.08); transform: rotate(20deg); pointer-events: none;
+}
+.card-visual-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.card-visual-name { font-family: 'Bai Jamjuree', sans-serif; font-size: 15px; font-weight: 700; }
+.card-visual-kind { font-size: 11.5px; opacity: 0.8; margin-top: 1px; }
+.card-visual-top > svg { opacity: 0.85; flex-shrink: 0; }
+.card-visual-number { font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.05em; opacity: 0.9; }
+.card-visual-bottom { display: flex; flex-direction: column; gap: 2px; }
+.card-visual-label { font-size: 11px; opacity: 0.8; }
+.card-visual-amount { font-family: 'Bai Jamjuree', sans-serif; font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.card-visual-network-text {
+  font-family: 'Bai Jamjuree', sans-serif; font-style: italic; font-weight: 700; font-size: 15px; letter-spacing: 0.02em;
+}
+/* Approximates the Mastercard mark: two overlapping circles, no logo asset needed. */
+.card-visual-network-mastercard { display: flex; }
+.card-visual-network-mastercard span { width: 20px; height: 20px; border-radius: 50%; display: block; }
+.card-visual-network-mastercard span:first-child { background: #EB5757; }
+.card-visual-network-mastercard span:last-child { background: #F2A93B; margin-inline-start: -8px; mix-blend-mode: screen; }
+.card-visual-add {
+  flex: 0 0 240px; min-height: 138px; border-radius: 18px; border: 1.5px dashed var(--faint);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  background: none; color: var(--muted-2); cursor: pointer; font-size: 13px; font-family: inherit;
+}
+.card-visual-add:hover { border-color: var(--blueprint); color: var(--blueprint); }
+
 /* ---------- Quick action grid ---------- */
 .quick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .quick-grid button {
@@ -191,6 +232,16 @@ h2 { font-family: 'IBM Plex Mono', monospace; font-size: 14px; text-transform: u
   font-family: inherit; color: var(--ink);
 }
 .meta-input:focus { outline: none; border-bottom-color: var(--line); }
+.last4-input { width: 64px; padding: 6px 8px; font-size: 12.5px; font-family: 'IBM Plex Mono', monospace; text-align: center; }
+.color-swatch-input {
+  width: 32px; height: 32px; padding: 2px; border: 1px solid var(--line); border-radius: 8px;
+  background: none; cursor: pointer; flex-shrink: 0;
+}
+/* Browsers put their own padding/border inside a color input's swatch — strip
+   it so the swatch itself fills the box instead of floating in a gray inset. */
+.color-swatch-input::-webkit-color-swatch-wrapper { padding: 0; }
+.color-swatch-input::-webkit-color-swatch { border: none; border-radius: 5px; }
+.color-swatch-input::-moz-color-swatch { border: none; border-radius: 5px; }
 
 .drag-handle { color: var(--muted); cursor: grab; touch-action: none; flex-shrink: 0; display: flex; }
 .total-row {
@@ -590,6 +641,31 @@ input:focus, select:focus { outline: 2px solid var(--blueprint); outline-offset:
 .cat-bar-fill { height: 100%; background: var(--danger); border-radius: 999px; }
 .cat-amt { text-align: end; font-family: 'IBM Plex Mono', monospace; }
 .drilldown-list { margin: 2px 0 8px 24px; }
+
+/* Home dashboard's read-only copy of the category bars: no drill-down button,
+   so no leading chevron column — 3 columns instead of the interactive
+   version's 4, or the label/bar/amount would land in the wrong slots. */
+.category-bars-compact .cat-bar-row {
+  grid-template-columns: 88px 1fr 76px; cursor: default; padding: 5px 2px; font-size: 13px;
+}
+.category-bars-compact .cat-bar-row:hover { box-shadow: none; }
+
+/* ---------- Dashboard main/sidebar split (desktop only) ---------- */
+/* Mobile: a plain stacked column, sidebar content first — same flex `order`
+   trick as elsewhere in this file, just needing a real flex/grid container
+   here (not `display: contents`) since the point is to actually *reorder*
+   these two panels between breakpoints, not just pass them through. */
+.dashboard-grid { display: flex; flex-direction: column; gap: 16px; }
+.dashboard-grid .panel-right { order: 1; display: flex; flex-direction: column; gap: 16px; }
+.dashboard-grid .panel-main { order: 2; display: flex; flex-direction: column; gap: 16px; }
+@media (min-width: 1024px) {
+  .dashboard-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; align-items: start; }
+  .dashboard-grid .panel-main { order: 1; grid-column: span 2; }
+  .dashboard-grid .panel-right { order: 2; grid-column: span 1; }
+}
+.category-summary-card { gap: 8px; }
+.category-summary-head { display: flex; justify-content: space-between; align-items: center; }
+.category-summary-head h2 { margin: 0; }
 
 .trend-chart { display: flex; gap: 8px; align-items: flex-end; height: 140px; margin-top: 8px; }
 .trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end; }

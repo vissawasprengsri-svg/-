@@ -11,14 +11,16 @@ import {
   Landmark,
   LayoutGrid,
   Pencil,
+  Plus,
   TrendingUp,
   Trash2,
   X,
 } from 'lucide-react';
-import type { Transaction, TransactionType, UpcomingBill } from '@finance/shared';
+import type { MonthlySummary, Transaction, TransactionType, UpcomingBill } from '@finance/shared';
 import { add, compare, formatCurrency, toMajorString, zero } from '@finance/shared';
 import { api, ApiError } from '../api/client';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { AccountCardVisual } from '../components/AccountCardVisual';
 import { useI18n } from '../i18n/I18nContext';
 import { useAccounts } from '../hooks/useAccounts';
 import { useDebts } from '../hooks/useDebts';
@@ -37,16 +39,24 @@ interface Props {
   onQuickAdd: (type: TransactionType) => void;
   onGoCategorize: () => void;
   onGoClaims: () => void;
+  onGoSettings: () => void;
+  onGoReports: () => void;
   onDeleted: (tx: Transaction, undo: () => Promise<void>) => void;
   onError: (message: string) => void;
   refreshSignal: number;
 }
 
-export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onDeleted, onError, refreshSignal }: Props) {
+function currentMonth(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onGoSettings, onGoReports, onDeleted, onError, refreshSignal }: Props) {
   const { t, formatDate } = useI18n();
   const { accounts, refresh: refreshAccounts } = useAccounts(onError);
   const { debts, refresh: refreshDebts } = useDebts(onError);
   const [recent, setRecent] = useState<Transaction[]>([]);
+  const [monthSummary, setMonthSummary] = useState<MonthlySummary | null>(null);
   const [outstanding, setOutstanding] = useState(zero());
   const [unsortedCount, setUnsortedCount] = useState(0);
   const [bills, setBills] = useState<UpcomingBill[]>([]);
@@ -65,13 +75,14 @@ export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onDelete
 
   async function refresh() {
     try {
-      const [tx, summary, unsorted, upcomingBills] = await Promise.all([
+      const [tx, summary, unsorted, upcomingBills, month] = await Promise.all([
         // Only "recent" is ever shown here, so ask the API for exactly that
         // page instead of pulling a full (now-unbounded) list and slicing client-side.
         api.listTransactions({ limit: 8 }),
         api.getClaimsSummary(),
         api.listUnsortedExpenses(),
         api.listUpcomingBills(),
+        api.monthlyReport(currentMonth()),
         refreshAccounts(),
         refreshDebts(),
       ]);
@@ -79,6 +90,7 @@ export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onDelete
       setOutstanding(summary.summary.totalOutstanding);
       setUnsortedCount(unsorted.transactions.length);
       setBills(upcomingBills.bills);
+      setMonthSummary(month.summary);
     } catch (err) {
       if (err instanceof ApiError) onError(err.message);
     }
@@ -91,6 +103,11 @@ export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onDelete
 
   const availableCash = accounts.filter((a) => a.kind !== 'credit_card').reduce((sum, a) => add(sum, a.currentBalance), zero());
   const debtTotal = debts.reduce((sum, d) => add(sum, d.currentBalance), zero());
+  // Top 5 by spend — a glance, not the full breakdown (that's what the Reports
+  // tab's "ดูทั้งหมด" link is for). Percentage is of the month's *total*
+  // expense, same denominator ReportsPage's full bars use, so a figure here
+  // means the same thing if the person checks it against Reports.
+  const topCategories = [...(monthSummary?.byCategory ?? [])].sort((a, b) => (BigInt(a.total) < BigInt(b.total) ? 1 : -1)).slice(0, 5);
 
   async function remove(tx: Transaction) {
     setConfirmDeleteTx(null);
@@ -181,6 +198,24 @@ export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onDelete
 
   return (
     <div className="stack">
+      <div className="cards-row-head">
+        <h2>{t('home.cardsTitle')}</h2>
+        <button type="button" className="linklike" onClick={onGoSettings}>
+          {t('home.manage')}
+        </button>
+      </div>
+      <div className="cards-row">
+        {accounts
+          .filter((a) => !a.isArchived)
+          .map((a) => (
+            <AccountCardVisual key={a.id} account={a} />
+          ))}
+        <button type="button" className="card-visual-add" onClick={onGoSettings}>
+          <Plus size={22} />
+          {t('home.addCard')}
+        </button>
+      </div>
+
       <div className="summary-grid">
         <div className="card card-main">
           <span className="card-label">{t('home.availableNow')}</span>
@@ -347,26 +382,64 @@ export function HomeDashboard({ onQuickAdd, onGoCategorize, onGoClaims, onDelete
         })}
       </ul>
 
-      <h2>{t('home.recent')}</h2>
-      <ul className="list">
-        {recent.length === 0 && <li className="empty">{t('home.empty')}</li>}
-        {recent.map((tx) => (
-          <li key={tx.id} className="row">
-            {TYPE_ICON[tx.type]}
-            <div className="row-info">
-              <span className="desc">{tx.description || t(`txType.${tx.type}`)}</span>
-              <span className="meta">
-                {formatDate(tx.transactionDate)} · {tx.categoryName || t(`txType.${tx.type}`)}
-              </span>
+      <div className="dashboard-grid">
+        <div className="panel-main">
+          <h2>{t('home.recent')}</h2>
+          <ul className="list">
+            {recent.length === 0 && <li className="empty">{t('home.empty')}</li>}
+            {recent.map((tx) => (
+              <li key={tx.id} className="row">
+                {TYPE_ICON[tx.type]}
+                <div className="row-info">
+                  <span className="desc">{tx.description || t(`txType.${tx.type}`)}</span>
+                  <span className="meta">
+                    {formatDate(tx.transactionDate)} · {tx.categoryName || t(`txType.${tx.type}`)}
+                  </span>
+                </div>
+                <span className={`amt ${tx.type === 'income' ? 'income' : 'expense'}`}>{formatCurrency(tx.amount, '฿', 2)}</span>
+                <button className="icon-btn" onClick={() => setConfirmDeleteTx(tx)}>
+                  <Trash2 size={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="hint">{t('home.undoHint')}</p>
+        </div>
+
+        <div className="panel-right">
+          <div className="card category-summary-card">
+            <div className="category-summary-head">
+              <h2>{t('reports.byCategory')}</h2>
+              <button type="button" className="linklike" onClick={onGoReports}>
+                {t('home.viewAll')}
+              </button>
             </div>
-            <span className={`amt ${tx.type === 'income' ? 'income' : 'expense'}`}>{formatCurrency(tx.amount, '฿', 2)}</span>
-            <button className="icon-btn" onClick={() => setConfirmDeleteTx(tx)}>
-              <Trash2 size={14} />
-            </button>
-          </li>
-        ))}
-      </ul>
-      <p className="hint">{t('home.undoHint')}</p>
+            {topCategories.length === 0 ? (
+              <p className="empty-sm">{t('reports.noData')}</p>
+            ) : (
+              <ul className="category-bars category-bars-compact">
+                {topCategories.map((c) => {
+                  const pct =
+                    monthSummary && compare(monthSummary.expense, '0') > 0
+                      ? Number((BigInt(c.total) * 100n) / BigInt(monthSummary.expense))
+                      : 0;
+                  return (
+                    <li key={c.categoryId ?? 'none'} className="cat-bar-block">
+                      <div className="cat-bar-row">
+                        <span className="cat-label">{c.categoryName || t('reports.uncategorized')}</span>
+                        <div className="cat-bar">
+                          <div className="cat-bar-fill" style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="cat-amt">{formatCurrency(c.total, '฿', 2)}</span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
 
       <ConfirmModal
         isOpen={confirmDeleteTx !== null}
